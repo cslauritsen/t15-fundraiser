@@ -18,6 +18,7 @@ use catalog::Catalog;
 use chrono::{DateTime, Utc};
 use db::{Db, PaidOutcome, ts};
 use ratelimit::RateLimiter;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use shared::{
     CatalogResponse, CheckoutRequest, CheckoutResponse, ErrorResponse, FieldError, OrderStatus,
@@ -45,7 +46,7 @@ pub struct AppState {
     pub catalog: Arc<Catalog>,
     pub db: Db,
     pub provider: Arc<dyn PaymentProvider>,
-    pub webhook_secret: String,
+    pub webhook_secret: Arc<SecretString>,
     pub base_url: String,
     pub limiter: Arc<RateLimiter>,
     pub now: Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>,
@@ -300,7 +301,7 @@ fn log_outcome(session_id: &str, outcome: &PaidOutcome) {
 async fn webhook(State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> Result<StatusCode, ApiError> {
     let now = (st.now)();
     let signature = headers.get("stripe-signature").and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !stripe::verify_signature(&st.webhook_secret, signature, &body, now.timestamp(), WEBHOOK_TOLERANCE_SECS) {
+    if !stripe::verify_signature(st.webhook_secret.expose_secret(), signature, &body, now.timestamp(), WEBHOOK_TOLERANCE_SECS) {
         tracing::warn!("webhook with bad signature rejected");
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_signature", "Invalid signature."));
     }

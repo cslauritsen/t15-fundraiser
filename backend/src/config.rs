@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use secrecy::SecretString;
 use std::path::PathBuf;
 
 pub struct Config {
@@ -10,8 +11,8 @@ pub struct Config {
     pub static_dir: PathBuf,
     /// Trunk build output (the SPA).
     pub frontend_dir: PathBuf,
-    pub stripe_secret_key: String,
-    pub stripe_webhook_secret: String,
+    pub stripe_secret_key: SecretString,
+    pub stripe_webhook_secret: SecretString,
     /// Trust `X-Forwarded-For` for rate limiting (only behind a reverse proxy).
     pub trust_proxy: bool,
     pub allow_missing_images: bool,
@@ -50,8 +51,8 @@ impl Config {
             catalog_path: var("CATALOG_PATH").unwrap_or_else(|| "./catalog.yaml".into()).into(),
             static_dir: var("STATIC_DIR").unwrap_or_else(|| "./static".into()).into(),
             frontend_dir: var("FRONTEND_DIR").unwrap_or_else(|| "./frontend/dist".into()).into(),
-            stripe_secret_key,
-            stripe_webhook_secret: required("STRIPE_WEBHOOK_SECRET")?,
+            stripe_secret_key: stripe_secret_key.into(),
+            stripe_webhook_secret: required("STRIPE_WEBHOOK_SECRET")?.into(),
             trust_proxy: flag("TRUST_PROXY"),
             allow_missing_images: flag("ALLOW_MISSING_IMAGES"),
         })

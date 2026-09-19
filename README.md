@@ -37,6 +37,17 @@ the Stripe dashboard for `{BASE_URL}/api/stripe/webhook` with events `checkout.s
 `checkout.session.async_payment_succeeded` and `checkout.session.expired`.
 Back up `DATABASE_PATH` (e.g. `sqlite3 data/fundraiser.db ".backup backup.db"`).
 
+### Docker
+
+    docker build -t t15-fundraiser .
+    docker run -d --name t15 -p 8080:8080 -v t15-data:/data --env-file .env \
+      -e BASE_URL=https://example.org t15-fundraiser
+
+The image bundles the binary, the SPA, `catalog.yaml` and `static/`; paths and `BIND_ADDR` are
+preset, so only `BASE_URL` and the Stripe keys are required. The SQLite database lives on the
+`/data` volume. Other commands: `docker exec t15 t15-fundraiser export`. Put HTTPS in front
+(and set `TRUST_PROXY=1`).
+
 ## Commands
 
     t15-fundraiser [serve]       run the server

@@ -1,0 +1,24 @@
+services:
+  t15-fundraiser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      LOG_FORMAT: pretty
+      OTEL_ENABLED: 'true'
+      RUST_BACKTRACE: "1"
+      RUST_LOG: TRACE
+      BASE_URL: https://greenery.planetlauritsen.com
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ${HOME}/secrets/papra-ai-agent.env:/app/.env
+#secrets:
+#  webhook_secret:
+#    file: ${HOME}/secrets/papra-ai-agent-webhook-secret.txt
+#  claude_api_key:
+#    file: ${HOME}/secrets/claude_api_key.txt
+#  papra_api_key:
+#    file: ${HOME}/secrets/papra_api_key.txt

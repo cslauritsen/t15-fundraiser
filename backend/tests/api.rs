@@ -90,7 +90,7 @@ fn harness() -> Harness {
         catalog: Arc::new(Catalog::parse(CATALOG, |_| true).unwrap()),
         db: db.clone(),
         provider: stripe.clone(),
-        webhook_secret: SECRET.into(),
+        webhook_secret: Arc::new(SECRET.into()),
         base_url: "https://fundraiser.test".into(),
         limiter: Arc::new(RateLimiter::new(10, Duration::from_secs(60))),
         now: Arc::new(move || Utc.timestamp_opt(c.load(Ordering::SeqCst), 0).unwrap()),

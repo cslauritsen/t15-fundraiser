@@ -4,6 +4,7 @@
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 use sha2::Sha256;
 
@@ -65,11 +66,11 @@ pub trait PaymentProvider: Send + Sync {
 
 pub struct StripeClient {
     http: reqwest::Client,
-    secret_key: String,
+    secret_key: SecretString,
 }
 
 impl StripeClient {
-    pub fn new(secret_key: String) -> Self {
+    pub fn new(secret_key: SecretString) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()
@@ -120,7 +121,7 @@ impl PaymentProvider for StripeClient {
         let resp = self
             .http
             .post("https://api.stripe.com/v1/checkout/sessions")
-            .bearer_auth(&self.secret_key)
+            .bearer_auth(self.secret_key.expose_secret())
             .header("Idempotency-Key", format!("order-{}", req.order_id))
             .form(&build_session_params(req))
             .send()
@@ -137,7 +138,7 @@ impl PaymentProvider for StripeClient {
         let resp = self
             .http
             .get(format!("https://api.stripe.com/v1/checkout/sessions/{session_id}"))
-            .bearer_auth(&self.secret_key)
+            .bearer_auth(self.secret_key.expose_secret())
             .send()
             .await
             .context("calling Stripe")?;

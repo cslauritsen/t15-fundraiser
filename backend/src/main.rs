@@ -21,6 +21,12 @@ const USAGE: &str = "usage: t15-fundraiser [serve | export | check-catalog]
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load .env before anything reads the environment (incl. RUST_LOG); real env vars take precedence.
+    match dotenvy::dotenv() {
+        Ok(_) => {}
+        Err(e) if e.not_found() => {}
+        Err(e) => return Err(e).context("loading .env"),
+    }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
@@ -59,8 +65,8 @@ async fn serve() -> Result<()> {
     let state = AppState {
         catalog: Arc::new(catalog),
         db,
-        provider: Arc::new(StripeClient::new(cfg.stripe_secret_key.clone())),
-        webhook_secret: cfg.stripe_webhook_secret.clone(),
+        provider: Arc::new(StripeClient::new(cfg.stripe_secret_key)),
+        webhook_secret: Arc::new(cfg.stripe_webhook_secret),
         base_url: cfg.base_url.clone(),
         limiter: Arc::new(RateLimiter::new(10, Duration::from_secs(60))),
         now: Arc::new(chrono::Utc::now),
