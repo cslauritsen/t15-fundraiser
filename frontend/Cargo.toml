@@ -1,0 +1,14 @@
+[package]
+name = "frontend"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+shared = { path = "../shared" }
+console_error_panic_hook = "0.1"
+gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+leptos = { version = "0.8", features = ["csr"] }
+leptos_router = "0.8"
+serde = "1"
+web-sys = { version = "0.3", features = ["Window", "Location"] }

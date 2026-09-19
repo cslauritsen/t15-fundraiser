@@ -1,0 +1,12 @@
+[build]
+dist = "dist"
+
+[serve]
+port = 3000
+
+# In dev, `trunk serve` proxies the API and item images to the backend (cargo run).
+[[proxy]]
+backend = "http://127.0.0.1:8080/api/"
+
+[[proxy]]
+backend = "http://127.0.0.1:8080/images/"

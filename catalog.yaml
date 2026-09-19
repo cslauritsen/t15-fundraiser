@@ -1,0 +1,141 @@
+# Troop 15 greenery fundraiser catalog (Sherwood Forest Farms, 2026 season).
+# Loaded at startup; restart to apply changes. Validate with: t15-fundraiser check-catalog
+# Ids are the vendor item numbers. Prices are the troop's retail prices from the SFF dashboard.
+
+# Orders are rejected after this moment (RFC 3339, explicit offset). EDT = -04:00.
+closes_at: "2026-10-30T23:59:59-04:00"
+
+delivery_note: "Scout-delivered items will be brought to your door Nov 16-24, 2026."
+shipping_note: "Gift items are packaged individually and shipped fresh directly to the recipient during the first 2 weeks after Thanksgiving (contiguous U.S. only). Delivery dates are not guaranteed."
+
+fulfillment:
+  # A delivery ZIP is local if it starts with any prefix or exactly matches an entry.
+  # TODO(chad): 441 covers Cuyahoga only. Add 440, 442, 443 for Lake/Lorain/Geauga/Summit/Medina.
+  local_zip_prefixes: ["441"]
+  local_zips: []
+
+# price_cents is all-in (shipping and any tax included).
+# image: filename in static/images/ (required). fulfillment: scout_delivery | direct_ship
+items:
+  # ---- Scout delivery (local group distribution) --------------------------------------------
+  - id: w2
+    name: Noble Fir 22” Wreath
+    description: Fresh, fragrant Noble fir wreath in a traditional arrangement. Includes a red velvet water-repellent bow and two snowy pine cone clusters for easy attaching.
+    price_cents: 3500
+    fulfillment: scout_delivery
+    image: w2.jpg
+    image_alt: Noble fir wreath with a red velvet bow and two pine cone clusters
+
+  - id: w4
+    name: Mixed Evergreen 22” Wreath
+    description: An aromatic combination of Noble fir, berried juniper, and incense cedar. Touches of color are provided by red faux holly berries. A red velvet water-repellent bow is included for easy attaching.
+    price_cents: 4000
+    fulfillment: scout_delivery
+    image: w4.jpg
+    image_alt: Mixed evergreen wreath with red holly berries and a red velvet bow
+
+  - id: w3
+    name: Mixed Evergreen 28” Wreath
+    description: An aromatic combination of Noble fir, berried juniper, and incense cedar. Touches of color are provided by red faux holly berries. A red velvet water-repellent bow is included for easy attaching.
+    price_cents: 6000
+    fulfillment: scout_delivery
+    image: w3.jpg
+    image_alt: Large mixed evergreen wreath with red holly berries and a red velvet bow
+
+  - id: g3
+    name: Western Cedar Garland
+    description: 10 ft of fragrant, fresh-cut western cedar garland made especially to adorn your front door or porch railing.
+    price_cents: 4500
+    fulfillment: scout_delivery
+    image: g3.jpg
+    image_alt: Western cedar garland draped around a front door
+
+  - id: s4
+    name: Noble Fir Door Swag
+    description: The perfect alternative to a wreath. Includes one set of snow-dusted cones and a red bow. Approximately 30” x 19”.
+    price_cents: 4000
+    fulfillment: scout_delivery
+    image: s4.jpg
+    image_alt: Noble fir door swag with pine cones and a red velvet bow
+
+  - id: c5
+    name: Tabletop Centerpiece
+    description: Cedar, Noble fir, pine, and berried juniper arranged in an oasis block and bowl for your table. Snowy white cones and red faux holly berries are included for custom arrangement, along with a traditional taper candle holder. Approximately 12” in diameter.
+    price_cents: 2500
+    fulfillment: scout_delivery
+    image: c5.jpg
+    image_alt: Evergreen tabletop centerpiece with red berries and pine cones
+
+  - id: r8
+    name: Reindeer, Sleigh and Gnome Set
+    description: A handcrafted holiday set featuring a metal reindeer dressed with a large wreath, a decorative sleigh, and two whimsical gnomes ready for holiday adventures. Sleigh measures 7” wide x 4” tall; reindeer measures 5” wide x 10” tall.
+    price_cents: 2500
+    fulfillment: scout_delivery
+    image: r8.jpg
+    image_alt: Metal reindeer with a wreath beside a sleigh carrying two gnomes
+
+  # ---- Direct ship (gift items, delivered to the recipient) ---------------------------------
+  - id: w4m
+    name: Mixed Evergreen 22” Gift Wreath
+    description: An aromatic combination of Noble fir, berried juniper, and incense cedar. Touches of color are provided by red faux holly berries. A pre-tied red burlap snowflake bow is included for easy attaching. Our best seller!
+    price_cents: 5500
+    fulfillment: direct_ship
+    image: w4m.jpg
+    image_alt: Mixed evergreen wreath with a red burlap snowflake bow
+
+  - id: w3m
+    name: Mixed Evergreen 28” Gift Wreath
+    description: Our largest, most dramatic wreath, made from Noble fir, berried juniper, and incense cedar, complemented with red faux holly berries and a red and gold snowflake bow.
+    price_cents: 7500
+    fulfillment: direct_ship
+    image: w3m.jpg
+    image_alt: Large mixed evergreen wreath with a red and gold snowflake bow
+
+  - id: g3m
+    name: Western Cedar Gift Garlands
+    description: Two sections of stunning garland for decorating a doorway or porch railing. Made of fragrant fresh-cut western cedar. Each garland measures 10 ft.
+    price_cents: 7000
+    fulfillment: direct_ship
+    image: g3m.jpg
+    image_alt: Western cedar garland framing a porch entry
+
+  - id: s4m
+    name: Gift Door Swag
+    description: A beautiful wreath alternative. This fragrant Noble fir door swag is adorned by white snow-dusted cones and our red burlap bow. Measures 30” x 19”.
+    price_cents: 5000
+    fulfillment: direct_ship
+    image: s4m.jpg
+    image_alt: Noble fir door swag with snowy cones and a red burlap bow
+
+  - id: c5m
+    name: Gift Centerpiece with LED Candle
+    description: Cedar, Noble fir, pine, and berried juniper arranged in an oasis block and bowl for your table, with snowy white cones and faux holly berry accents. LED candle included (AA batteries not included). Measures 12” in diameter.
+    price_cents: 5500
+    fulfillment: direct_ship
+    image: c5m.jpg
+    image_alt: Evergreen centerpiece with a red LED taper candle
+
+  - id: n7m
+    name: Rustic Pine Cone Gift Basket
+    description: A rustic willow basket filled with an assortment of large, medium, and small snowy pine cones. Basket is approximately 13” in diameter and 6” deep. Actual basket style may vary.
+    price_cents: 5000
+    fulfillment: direct_ship
+    image: n7m.jpg
+    image_alt: Willow basket filled with pine cones and red berries
+
+  - id: egm
+    name: Evergreen Gift Set
+    description: Perfect for any entry, this set includes two 10 ft western cedar garlands and an aromatic 22” mixed evergreen gift wreath with Noble fir, berried juniper, incense cedar, red faux holly berries, and a red burlap snowflake bow.
+    price_cents: 11000
+    fulfillment: direct_ship
+    max_qty: 10
+    image: egm.jpg
+    image_alt: Cedar garland and a wreath framing a front door
+
+  - id: r8m
+    name: Reindeer, Sleigh and Gnome Gift Set
+    description: A handcrafted holiday set featuring a metal reindeer dressed with a large wreath, a decorative sleigh, and two whimsical gnomes ready for holiday adventures. Sleigh measures 7” wide x 4” tall; reindeer measures 5” wide x 10” tall.
+    price_cents: 5000
+    fulfillment: direct_ship
+    image: r8m.jpg
+    image_alt: Metal reindeer with a wreath beside a sleigh carrying two gnomes
