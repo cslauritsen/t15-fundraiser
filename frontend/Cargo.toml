@@ -11,4 +11,4 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 leptos = { version = "0.8", features = ["csr"] }
 leptos_router = "0.8"
 serde = "1"
-web-sys = { version = "0.3", features = ["Window", "Location"] }
+web-sys = { version = "0.3", features = ["Document", "Element", "Window", "Location"] }

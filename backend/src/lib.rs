@@ -30,6 +30,7 @@ use std::time::Instant;
 use stripe::{PaymentProvider, SessionInfo, SessionLine, SessionRequest};
 use tower::ServiceBuilder;
 use tower_http::{
+    compression::CompressionLayer,
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
@@ -110,10 +111,34 @@ pub fn router(state: AppState, dirs: Option<StaticDirs>) -> Router {
             .service(ServeDir::new(d.static_dir.join("images")));
         // Unknown paths get index.html (with 200) so client-side routes like /success work.
         let spa = ServeDir::new(&d.frontend_dir).fallback(ServeFile::new(d.frontend_dir.join("index.html")));
-        app = app.nest_service("/images", images).fallback_service(spa);
+        app = app
+            .nest_service("/images", images)
+            .fallback_service(spa)
+            .layer(middleware::from_fn(static_cache_headers));
     }
 
-    app.layer(TraceLayer::new_for_http()).with_state(state)
+    app.layer(CompressionLayer::new()).layer(TraceLayer::new_for_http()).with_state(state)
+}
+
+/// Trunk content-hashes the wasm/js/css filenames, so those can be cached forever;
+/// the HTML shell must be revalidated so a new deploy is picked up.
+async fn static_cache_headers(req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    let mut resp = next.run(req).await;
+    if path.starts_with("/api") || resp.headers().contains_key(header::CACHE_CONTROL) {
+        return resp;
+    }
+    let value = if path.ends_with(".wasm") || path.ends_with(".js") || path.ends_with(".css") {
+        Some("public, max-age=31536000, immutable")
+    } else if resp.headers().get(header::CONTENT_TYPE).is_some_and(|t| t.as_bytes().starts_with(b"text/html")) {
+        Some("no-cache")
+    } else {
+        None
+    };
+    if let Some(v) = value {
+        resp.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static(v));
+    }
+    resp
 }
 
 fn client_key(st: &AppState, req: &Request) -> String {

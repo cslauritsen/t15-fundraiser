@@ -10,3 +10,8 @@ edition = "2024"
 
 [profile.release]
 lto = "thin"
+
+# The wasm bundle is what visitors download, so optimize the frontend for size.
+[profile.release.package.frontend]
+opt-level = "z"
+codegen-units = 1
