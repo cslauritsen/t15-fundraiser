@@ -19,11 +19,17 @@ catalog.yaml, static/images/   the items and their photos
 ## Develop
 
     # terminal 1: API + static images on :8080
-    set -a; source .env; set +a; cargo run -p t15-fundraiser
+    cargo run -p t15-fundraiser
     # terminal 2: SPA on :3000, proxying /api and /images to :8080
     cd frontend && trunk serve
     # terminal 3: forward Stripe webhooks (prints the whsec_ secret for .env)
-    stripe listen --forward-to localhost:8080/api/stripe/webhook
+    stripe listen --forward-to localhost:8080/api/stripe/webhook \
+      --events checkout.session.completed,checkout.session.async_payment_succeeded,checkout.session.expired
+
+The server loads `.env` itself at startup (searching the current directory and its parents), so
+don't `source` it. Variables already set in your shell take precedence over `.env`, so an old
+exported `STRIPE_SECRET_KEY` will silently win; `unset` it if Stripe returns 401. Restart the
+server after editing `.env`.
 
 Test card: `4242 4242 4242 4242`, any future date and CVC.
 
