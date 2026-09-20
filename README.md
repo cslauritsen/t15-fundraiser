@@ -45,7 +45,7 @@ Back up `DATABASE_PATH` (e.g. `sqlite3 data/fundraiser.db ".backup backup.db"`).
 
 ### Docker
 
-    docker build -t t15-fundraiser .
+    docker build -t t15-fundraiser --build-arg GIT_DESCRIBE=$(git describe --always --dirty --tags) .
     docker run -d --name t15 -p 8080:8080 -v t15-data:/data --env-file .env \
       -e BASE_URL=https://example.org t15-fundraiser
 

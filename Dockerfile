@@ -22,6 +22,8 @@ RUN rustup target add wasm32-unknown-unknown && cargo install trunk --locked
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --locked --target wasm32-unknown-unknown -p frontend --recipe-path recipe.json
 COPY . .
+# .git is not in the build context; pass the version in: --build-arg GIT_DESCRIBE=$(git describe --always --dirty --tags)
+ARG GIT_DESCRIBE=unknown
 RUN cd frontend && trunk build --release
 
 # ---- runtime ----

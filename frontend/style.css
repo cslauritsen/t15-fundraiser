@@ -20,6 +20,7 @@ body {
 header.site { background: var(--green); color: #fff; padding: 1.25rem 1rem; text-align: center; }
 header.site h1 { margin: 0; font-size: 1.6rem; }
 header.site p { margin: .25rem 0 0; opacity: .9; }
+footer.site { text-align: center; font-size: .75rem; opacity: .6; padding: 1rem; }
 main { max-width: 56rem; margin: 0 auto; padding: 1rem; }
 h2 { margin: 1.5rem 0 .75rem; font-size: 1.25rem; }
 .notes { background: #e8f1ea; border-left: 4px solid var(--green); padding: .6rem .9rem; border-radius: 4px; margin: 1rem 0; }

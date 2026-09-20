@@ -30,6 +30,7 @@ fn App() -> impl IntoView {
                     <Route path=path!("/cancel") view=pages::Cancel />
                 </Routes>
             </main>
+            <footer class="site">{env!("GIT_DESCRIBE")}</footer>
         </Router>
     }
 }
