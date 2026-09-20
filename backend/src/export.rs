@@ -1,25 +1,29 @@
 use crate::db::OrderRow;
 use anyhow::Result;
-use shared::{Fulfillment, OrderLine, format_cents};
+use shared::format_cents;
+use std::collections::BTreeSet;
 use std::io::Write;
 
-fn items(lines: &[OrderLine], f: Fulfillment) -> String {
-    lines
+/// One row per order with one quantity column per product, headed by its item id (blank = none).
+/// Columns follow `item_ids` (catalog order); ids that appear in orders but not in `item_ids`
+/// (e.g. items since removed from the catalog) are appended in id order.
+pub fn write_csv(orders: &[OrderRow], item_ids: &[String], mut w: impl Write) -> Result<()> {
+    let mut products: Vec<&str> = item_ids.iter().map(String::as_str).collect();
+    let extra: BTreeSet<&str> = orders
         .iter()
-        .filter(|l| l.fulfillment == f)
-        .map(|l| format!("{}x {}", l.qty, l.name))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
+        .flat_map(|o| o.lines.iter().map(|l| l.item_id.as_str()))
+        .filter(|id| !products.contains(id))
+        .collect();
+    products.extend(extra);
 
-/// One row per order, with scout-delivery and direct-ship items split for planning.
-pub fn write_csv(orders: &[OrderRow], w: impl Write) -> Result<()> {
+    // Byte-order mark: without it Excel reads the file as MacRoman/Windows-1252 and mangles
+    // non-ASCII characters (curly quotes, accents).
+    w.write_all(b"\xEF\xBB\xBF")?;
     let mut out = csv::Writer::from_writer(w);
-    out.write_record([
-        "order_id", "status", "paid_at", "buyer_name", "email", "phone", "scout_name", "total",
-        "delivery_items", "delivery_address", "delivery_notes", "ship_items", "ship_to", "gift_message",
-        "review_reason",
-    ])?;
+    let mut header: Vec<&str> = vec!["order_id", "status", "paid_at", "buyer_name", "email", "phone", "scout_name", "total"];
+    header.extend(&products);
+    header.extend(["delivery_address", "delivery_notes", "ship_to", "gift_message", "review_reason"]);
+    out.write_record(&header)?;
     for o in orders {
         let delivery_address = o
             .delivery
@@ -37,23 +41,28 @@ pub fn write_csv(orders: &[OrderRow], w: impl Write) -> Result<()> {
                 format!("{}, {}, {}, {} {}", s.name, street, s.city, s.state, s.postal_code)
             })
             .unwrap_or_default();
-        out.write_record([
-            o.id.as_str(),
-            o.status.as_str(),
-            o.paid_at.as_deref().unwrap_or(""),
-            &o.buyer_name,
-            &o.email,
-            &o.phone,
-            o.scout_name.as_deref().unwrap_or(""),
-            &format_cents(o.total_cents),
-            &items(&o.lines, Fulfillment::ScoutDelivery),
-            &delivery_address,
-            o.delivery.as_ref().and_then(|d| d.notes.as_deref()).unwrap_or(""),
-            &items(&o.lines, Fulfillment::DirectShip),
-            &ship_to,
-            o.gift_message.as_deref().unwrap_or(""),
-            o.review_reason.as_deref().unwrap_or(""),
-        ])?;
+        let mut row: Vec<String> = vec![
+            o.id.clone(),
+            o.status.as_str().to_string(),
+            o.paid_at.clone().unwrap_or_default(),
+            o.buyer_name.clone(),
+            o.email.clone(),
+            o.phone.clone(),
+            o.scout_name.clone().unwrap_or_default(),
+            format_cents(o.total_cents),
+        ];
+        row.extend(products.iter().map(|id| {
+            let qty: u32 = o.lines.iter().filter(|l| l.item_id == *id).map(|l| l.qty).sum();
+            if qty == 0 { String::new() } else { qty.to_string() }
+        }));
+        row.extend([
+            delivery_address,
+            o.delivery.as_ref().and_then(|d| d.notes.clone()).unwrap_or_default(),
+            ship_to,
+            o.gift_message.clone().unwrap_or_default(),
+            o.review_reason.clone().unwrap_or_default(),
+        ]);
+        out.write_record(&row)?;
     }
     out.flush()?;
     Ok(())

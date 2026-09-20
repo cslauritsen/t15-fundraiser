@@ -150,6 +150,7 @@ impl OrderStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OrderLine {
+    pub item_id: String,
     pub name: String,
     pub unit_price_cents: i64,
     pub qty: u32,

@@ -53,7 +53,16 @@ fn check_catalog() -> Result<()> {
 async fn export() -> Result<()> {
     let db = Db::open(&Config::database_path_from_env())?;
     let rows = db.call(|c| db::list_orders_for_export(c)).await?;
-    export::write_csv(&rows, std::io::stdout().lock())
+    // Product columns follow catalog order; without a readable catalog they fall back to the ids in the orders.
+    let p = CatalogPaths::from_env();
+    let item_ids = match Catalog::load(&p.catalog_path, &p.images_dir, false) {
+        Ok(c) => c.view(chrono::Utc::now()).items.into_iter().map(|i| i.id).collect(),
+        Err(e) => {
+            eprintln!("warning: catalog not loaded ({e:#}); product columns are in id order");
+            Vec::new()
+        }
+    };
+    export::write_csv(&rows, &item_ids, std::io::stdout().lock())
 }
 
 async fn serve() -> Result<()> {

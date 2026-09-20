@@ -145,14 +145,15 @@ pub fn mark_failed(conn: &Connection, order_id: &str) -> rusqlite::Result<()> {
 
 fn load_lines(conn: &Connection, order_id: &str) -> rusqlite::Result<Vec<OrderLine>> {
     let mut stmt = conn.prepare(
-        "SELECT name, unit_price_cents, qty, fulfillment FROM order_items WHERE order_id = ?1 ORDER BY rowid",
+        "SELECT item_id, name, unit_price_cents, qty, fulfillment FROM order_items WHERE order_id = ?1 ORDER BY rowid",
     )?;
     stmt.query_map([order_id], |r| {
         Ok(OrderLine {
-            name: r.get(0)?,
-            unit_price_cents: r.get(1)?,
-            qty: r.get(2)?,
-            fulfillment: Fulfillment::parse(&r.get::<_, String>(3)?).unwrap_or(Fulfillment::ScoutDelivery),
+            item_id: r.get(0)?,
+            name: r.get(1)?,
+            unit_price_cents: r.get(2)?,
+            qty: r.get(3)?,
+            fulfillment: Fulfillment::parse(&r.get::<_, String>(4)?).unwrap_or(Fulfillment::ScoutDelivery),
         })
     })?
     .collect()
