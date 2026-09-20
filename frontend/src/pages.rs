@@ -223,7 +223,7 @@ fn OrderForm(catalog: CatalogResponse) -> impl IntoView {
                 <Field label="Your name" name="buyer_name" value=name errors=errors autocomplete="name" />
                 <Field label="Email (your receipt goes here)" name="email" value=email errors=errors kind="email" autocomplete="email" />
                 <Field label="Phone" name="phone" value=phone errors=errors kind="tel" autocomplete="tel" hint="In case there's a delivery question." />
-                <Field label="Scout to credit (optional)" name="scout_name" value=scout errors=errors />
+                <Field label="Scout to credit" name="scout_name" value=scout errors=errors />
             </fieldset>
 
             <Show when=needs_delivery>

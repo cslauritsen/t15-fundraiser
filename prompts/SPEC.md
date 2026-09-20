@@ -55,7 +55,7 @@ Each item is either `scout_delivery` or `direct_ship`. Carts may mix both in one
 - Cart contains any `scout_delivery` item: form requires a **delivery address** (name, street, city, state, ZIP, **required phone**, optional delivery notes). ZIP must match `local_zip_prefixes` or `local_zips`; enforced in the form and again on the server.
 - Cart contains any `direct_ship` item: form requires the gift **recipient's shipping address** (name, street, optional apartment, city, state, ZIP) and offers an optional **gift message** of at most 20 characters, printed on the shipping label. State must be in the **contiguous US** (48 states plus DC; Alaska, Hawaii and territories are rejected). All direct-ship items in one order go to one recipient with one message; separate recipients mean separate orders. Neither field is collected or stored when the cart has no direct-ship items.
 - Phone is required on every order (simplifies validation and gives leaders a contact for delivery problems).
-- Optional field on the form: "Scout to credit" (free text), stored on the order.
+- Required field on the form: "Scout to credit" (free text, at most 100 characters), stored on the order.
 
 Both addresses are collected by our own form, not by Stripe. Stripe Checkout can neither enforce a local ZIP allowlist nor exclude Alaska and Hawaii (it filters by country only) and reports the address only after the buyer has paid, so restrictions could not be applied before payment. Validating on our side rejects a bad address before any Stripe session exists. Stripe's hosted page collects only card details.
 

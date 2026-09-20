@@ -117,6 +117,7 @@ fn order_body(lines: Value) -> Value {
         "email": "Pat@Example.com",
         "buyer_name": "Pat Smith",
         "phone": "(216) 555-0142",
+        "scout_name": "Alex",
         "delivery": {"street": "1 Main St", "city": "Cleveland", "state": "OH", "zip": "44101"},
         "shipping": {"name": "Sam Jones", "line1": "9 Elm St", "line2": "Apt 2", "city": "Akron", "state": "OH", "postal_code": "44301"},
         "gift_message": "Merry Christmas!"

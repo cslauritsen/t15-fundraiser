@@ -224,7 +224,7 @@ pub fn validate_checkout(
             String::new()
         }
     };
-    let scout_name = errs.optional_text("scout_name", req.scout_name.as_deref(), "Scout name", 100);
+    let scout_name = Some(errs.text("scout_name", req.scout_name.as_deref().unwrap_or(""), "Scout name", 100));
 
     let delivery = if needs_delivery {
         let d = req.delivery.clone().unwrap_or_default();
@@ -333,7 +333,7 @@ mod tests {
             email: " Pat@Example.COM ".into(),
             buyer_name: "Pat Smith".into(),
             phone: "(216) 555-0142".into(),
-            scout_name: None,
+            scout_name: Some("Alex".into()),
             delivery: Some(Delivery {
                 street: "1 Main St".into(),
                 city: "Cleveland".into(),
@@ -366,6 +366,16 @@ mod tests {
         assert_eq!(o.total_cents, 7000);
         // Delivery-only cart: shipping address and gift message are dropped.
         assert!(o.shipping.is_none() && o.gift_message.is_none());
+    }
+
+    #[test]
+    fn scout_name_is_required() {
+        for missing in [None, Some("   ".to_string())] {
+            let mut r = request();
+            r.scout_name = missing;
+            assert_eq!(fields(validate_checkout(&r, &catalog())), ["scout_name"]);
+        }
+        assert_eq!(validate_checkout(&request(), &catalog()).unwrap().scout_name.as_deref(), Some("Alex"));
     }
 
     #[test]
