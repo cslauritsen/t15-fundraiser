@@ -29,7 +29,7 @@ RUN cd frontend && trunk build --release
 # ---- runtime ----
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates sqlite3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home-dir /app app \
     && mkdir /data && chown app /data
