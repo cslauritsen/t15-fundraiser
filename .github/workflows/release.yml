@@ -1,0 +1,75 @@
+# Builds and pushes the Docker image when a GitHub release is published.
+# The release tag (e.g. v1.2.3) becomes the image tag, the cargo version (1.2.3), and the
+# GIT_DESCRIBE shown in the site footer.
+#
+# Pushes to GHCR using the built-in GITHUB_TOKEN; no extra secrets needed.
+
+name: release
+
+on:
+  release:
+    types: [published]
+
+env:
+  IMAGE: ghcr.io/cslauritsen/t15-fundraiser
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::release tag '$TAG' is not a semver version (expected e.g. v1.2.3)"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      # Cargo.lock is kept in sync so the Dockerfile's `--locked` builds still pass.
+      - name: Set cargo version
+        run: |
+          CURRENT=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          for pkg in shared t15-fundraiser frontend; do
+            perl -0pi -e "s/(name = \"$pkg\"\nversion = \")\Q$CURRENT\E\"/\${1}$VERSION\"/" Cargo.lock
+          done
+          git diff --stat
+          git diff Cargo.toml Cargo.lock
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        run: |
+          TAGS="$IMAGE:$VERSION"
+          if [ "${{ github.event.release.prerelease }}" != "true" ]; then
+            TAGS="$TAGS,$IMAGE:latest"
+          fi
+          echo "TAGS=$TAGS" >> "$GITHUB_ENV"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.TAGS }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          build-args: |
+            GIT_DESCRIBE=${{ github.event.release.tag_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
