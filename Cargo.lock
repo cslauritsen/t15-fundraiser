@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "frontend"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "console_error_panic_hook",
  "gloo-net",
@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
 ]
@@ -2382,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "t15-fundraiser"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
