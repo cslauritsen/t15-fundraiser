@@ -1,0 +1,27 @@
+# Live (real-money) deployment. Kept separate from docker-compose.yml, which is the Stripe sandbox
+# at dev.troop15.org, so the two can't share a database, env file or container name.
+#
+#   docker compose -f docker-compose.live.yml up -d --build
+#
+# ~/secrets/greenery-live.env must contain sk_live_ / live whsec_ values (see README "Go live").
+name: t15-fundraiser-live
+
+services:
+  t15-fundraiser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      RUST_LOG: info
+      BASE_URL: https://troop15.org
+      TRUST_PROXY: "1"
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ${HOME}/secrets/greenery-live.env:/app/.env:ro
+      - t15-live-data:/data
+
+volumes:
+  t15-live-data:

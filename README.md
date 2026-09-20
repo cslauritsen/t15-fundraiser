@@ -54,6 +54,28 @@ preset, so only `BASE_URL` and the Stripe keys are required. The SQLite database
 `/data` volume. Other commands: `docker exec t15 t15-fundraiser export`. Put HTTPS in front
 (and set `TRUST_PROXY=1`).
 
+### Go live
+
+Live runs from `docker-compose.live.yml` (project `t15-fundraiser-live`, port 8081, named volume
+`t15-live-data`), separate from the sandbox in `docker-compose.yml`.
+
+1. Stripe: finish account verification, add the payout bank account, and pick a payout schedule.
+2. Stripe (live mode): add a webhook endpoint `https://troop15.org/api/stripe/webhook` for
+   `checkout.session.completed`, `checkout.session.async_payment_succeeded` and
+   `checkout.session.expired`; copy its `whsec_`.
+3. Create `~/secrets/greenery-live.env` (never commit it):
+
+        STRIPE_SECRET_KEY=sk_live_...
+        STRIPE_WEBHOOK_SECRET=whsec_...   # the live endpoint's, not the sandbox one
+
+   `BASE_URL`, `TRUST_PROXY` and the data path are set in the compose file.
+4. Point the reverse proxy for `troop15.org` (HTTPS) at port 8081.
+5. `docker compose -f docker-compose.live.yml up -d --build`
+6. Smoke test: buy one small item with a real card, confirm the webhook delivery succeeded in the
+   Stripe dashboard and the order appears in `t15-fundraiser export`, then refund it.
+7. Reconcile: match each Stripe payout to a deposit in the troop account, using Stripe's payout
+   report and the export CSV.
+
 ## Commands
 
     t15-fundraiser [serve]       run the server

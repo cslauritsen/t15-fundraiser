@@ -8,14 +8,16 @@ services:
       OTEL_ENABLED: 'true'
       RUST_BACKTRACE: "1"
       RUST_LOG: TRACE
-      BASE_URL: https://greenery.planetlauritsen.com
+      BASE_URL: https://dev.troop15.org
     ports:
       - "8080:8080"
     restart: unless-stopped
     working_dir: /app
     volumes:
-      - ${HOME}/secrets/papra-ai-agent.env:/app/.env
+      - ${HOME}/secrets/greenery-test.env:/app/.env
 #secrets:
+#   dotenvy_file:
+#     file: ${HOME}/secrets/greenery-test.env
 #  webhook_secret:
 #    file: ${HOME}/secrets/papra-ai-agent-webhook-secret.txt
 #  claude_api_key:
