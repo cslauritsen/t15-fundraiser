@@ -8,6 +8,10 @@ use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 use sha2::Sha256;
 
+/// Stripe API version every request is pinned to, so behaviour doesn't change when the account's
+/// default version is upgraded. Bump deliberately after reading https://docs.stripe.com/changelog.
+pub const STRIPE_API_VERSION: &str = "2026-08-26.dahlia";
+
 pub struct SessionLine {
     pub name: String,
     pub unit_amount: i64,
@@ -122,6 +126,7 @@ impl PaymentProvider for StripeClient {
             .http
             .post("https://api.stripe.com/v1/checkout/sessions")
             .bearer_auth(self.secret_key.expose_secret())
+            .header("Stripe-Version", STRIPE_API_VERSION)
             .header("Idempotency-Key", format!("order-{}", req.order_id))
             .form(&build_session_params(req))
             .send()
@@ -139,6 +144,7 @@ impl PaymentProvider for StripeClient {
             .http
             .get(format!("https://api.stripe.com/v1/checkout/sessions/{session_id}"))
             .bearer_auth(self.secret_key.expose_secret())
+            .header("Stripe-Version", STRIPE_API_VERSION)
             .send()
             .await
             .context("calling Stripe")?;
