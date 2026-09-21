@@ -37,6 +37,18 @@ pub struct CatalogItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Support {
+    pub email: String,
+    pub phone: String,
+}
+
+impl Default for Support {
+    fn default() -> Self {
+        Self { email: String::new(), phone: String::new() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CatalogResponse {
     pub open: bool,
     /// RFC 3339 timestamp; display only.
@@ -45,6 +57,7 @@ pub struct CatalogResponse {
     pub shipping_note: String,
     pub local_zip_prefixes: Vec<String>,
     pub local_zips: Vec<String>,
+    pub support: Support,
     pub items: Vec<CatalogItem>,
 }
 

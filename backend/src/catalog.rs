@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, Utc};
 use serde::Deserialize;
-use shared::{CatalogItem, CatalogResponse, Fulfillment};
+use shared::{CatalogItem, CatalogResponse, Fulfillment, Support};
 use std::path::Path;
 
 #[derive(Deserialize)]
@@ -12,6 +12,8 @@ struct RawCatalog {
     delivery_note: String,
     #[serde(default)]
     shipping_note: String,
+    #[serde(default)]
+    support: Support,
     fulfillment: RawFulfillment,
     items: Vec<RawItem>,
 }
@@ -141,6 +143,7 @@ impl Catalog {
                 shipping_note: raw.shipping_note,
                 local_zip_prefixes: raw.fulfillment.local_zip_prefixes,
                 local_zips: raw.fulfillment.local_zips,
+                support: raw.support,
                 items,
             },
         })

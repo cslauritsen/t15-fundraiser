@@ -320,6 +320,7 @@ mod tests {
             shipping_note: String::new(),
             local_zip_prefixes: vec!["441".into()],
             local_zips: vec!["44001".into()],
+            support: Default::default(),
             items: vec![
                 item("wreath", 3500, Fulfillment::ScoutDelivery),
                 item("box", 5500, Fulfillment::DirectShip),

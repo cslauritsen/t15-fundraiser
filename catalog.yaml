@@ -18,6 +18,14 @@ fulfillment:
 # image: filename in static/images/ (required). fulfillment: scout_delivery | direct_ship
 items:
   # ---- Scout delivery (local group distribution) --------------------------------------------
+  - id: syrup1
+    name: Scout's Own Maple Syrup (8 oz)
+    description: A rich and flavorful maple syrup made by Scouts. Perfect for pancakes, waffles, and spaghetti. 8 oz glass bottle with a screw-top lid.
+    price_cents: 1500
+    fulfillment: scout_delivery
+    image: syrup1.png
+    image_alt: 8 oz glass bottle of Scout's Own Maple Syrup
+
   - id: w2
     name: Noble Fir 22” Wreath
     description: Fresh, fragrant Noble fir wreath in a traditional arrangement. Includes a red velvet water-repellent bow and two snowy pine cone clusters for easy attaching.
@@ -139,3 +147,7 @@ items:
     fulfillment: direct_ship
     image: r8m.jpg
     image_alt: Metal reindeer with a wreath beside a sleigh carrying two gnomes
+
+support:
+    email: support@troop15.org
+    phone: 216-555-1234

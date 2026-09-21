@@ -312,6 +312,35 @@ const STATES: [&str; 51] = [
 // ---------------------------------------------------------------------------------------------
 
 #[component]
+pub fn CustomerService() -> impl IntoView {
+    let catalog = LocalResource::new(api::fetch_catalog);
+    view! {
+        <Suspense fallback=|| view! { <p class="center">"Loading…"</p> }>
+            {move || {
+                catalog.get().map(|result| match result {
+                    Ok(c) => {
+                        let email = c.support.email.clone();
+                        let phone = c.support.phone.clone();
+                        view! {
+                            <div class="support-page">
+                                <h2>"Customer service"</h2>
+                                <p>"Questions about your order? Please reach out to our fundraiser team and we'll be happy to help."</p>
+                                <div class="summary">
+                                    <p><strong>"Email: "</strong><a href=format!("mailto:{email}")>{email.clone()}</a></p>
+                                    <p><strong>"Phone: "</strong><a href=format!("tel:{phone}")>{phone.clone()}</a></p>
+                                </div>
+                                <p><A href="/">"Back to the shop"</A></p>
+                            </div>
+                        }.into_any()
+                    }
+                    Err(e) => view! { <p class="banner-error">{e.message()}</p> }.into_any(),
+                })
+            }}
+        </Suspense>
+    }
+}
+
+#[component]
 pub fn Success() -> impl IntoView {
     let query = use_query_map();
     let status = LocalResource::new(move || {
