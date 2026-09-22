@@ -17,9 +17,13 @@ body {
   background: var(--bg);
   line-height: 1.45;
 }
-header.site { background: var(--green); color: #fff; padding: 1.25rem 1rem; text-align: center; }
+header.site { position: relative; background: var(--green); color: #fff; padding: 1.25rem 1rem; text-align: center; }
+.site-header { position: relative; display: flex; align-items: center; justify-content: center; gap: .75rem; }
 header.site h1 { margin: 0; font-size: 1.6rem; }
 header.site p { margin: .25rem 0 0; opacity: .9; }
+.menu-toggle { position: absolute; top: 50%; left: 1rem; display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; transform: translateY(-50%); color: #fff; background: transparent; border: 1px solid rgba(255,255,255,.65); border-radius: 6px; padding: 0; font-size: 1.2rem; line-height: 1; cursor: pointer; }
+.menu { position: absolute; top: 100%; left: 1rem; z-index: 10; min-width: 12rem; padding: .75rem 1rem; background: var(--card); border: 1px solid var(--border); border-radius: 0 0 8px 8px; box-shadow: 0 .4rem 1rem rgba(0,0,0,.15); text-align: left; }
+.menu a { color: var(--green); font-weight: 600; }
 footer.site { text-align: center; font-size: .75rem; opacity: .6; padding: 1rem; }
 main { max-width: 56rem; margin: 0 auto; padding: 1rem; }
 h2 { margin: 1.5rem 0 .75rem; font-size: 1.25rem; }
@@ -57,4 +61,6 @@ button.primary:hover:not(:disabled) { background: var(--green-dark); }
 button.primary:disabled { opacity: .6; cursor: default; }
 .banner-error { background: #fdecea; border: 1px solid #f3b8b3; color: var(--error); padding: .75rem 1rem; border-radius: 8px; margin: 1rem 0; }
 .center { text-align: center; padding: 2rem 0; }
+.support-page { max-width: 36rem; margin: 0 auto; }
+.support-page .summary p { margin: .4rem 0; }
 a { color: var(--green); }
