@@ -443,7 +443,7 @@ async fn admin_logout_clears_session_and_redirects() {
     let req = Request::builder().method(Method::GET).uri("/admin/logout").body(Body::empty()).unwrap();
     let resp = h.app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-    assert_eq!(resp.headers().get("location").unwrap(), "/admin");
+    assert_eq!(resp.headers().get("location").unwrap(), "/");
     let set_cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
     assert!(set_cookie.starts_with("admin_session="), "{set_cookie}");
     assert!(set_cookie.contains("Max-Age=0"), "{set_cookie}");
