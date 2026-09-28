@@ -82,6 +82,23 @@ Live runs from `docker-compose.live.yml` (project `t15-fundraiser-live`, port 80
     t15-fundraiser export        paid + needs_review orders as CSV on stdout
     t15-fundraiser check-catalog validate catalog.yaml, list items
 
+## Admin CSV export (web)
+
+`GET /admin` (bookmark it; it's not linked from the site) offers the same CSV export as
+`t15-fundraiser export`, gated by Google sign-in:
+
+1. Create an OAuth2 client at https://console.cloud.google.com/apis/credentials (type
+   "Web application") with an authorized redirect URI of `{BASE_URL}/admin/callback`.
+2. Set `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` (see `.env.example`), or mount them as files at
+   `/run/secrets/client_id` and `/run/secrets/client_secret` (e.g. Docker/Podman secrets) —
+   an env var takes precedence over the secret file if both are present.
+3. Add the Google account email(s) allowed in to catalog.yaml's `admins` list.
+
+Visiting `/admin` while signed out redirects into the Google login; on success it lands on a page
+with a "Download orders CSV" link (`/admin/export.csv`) and a logout link. The session is kept in
+an encrypted, HttpOnly cookie (no server-side session store), and is re-checked against the
+`admins` list on every request, so removing an email from catalog.yaml revokes access immediately.
+
 ## Tests
 
     cargo test                                        # shared, backend unit + HTTP integration tests

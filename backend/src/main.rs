@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use t15_fundraiser::{
     AppState, StaticDirs,
+    admin::AdminOidc,
     catalog::Catalog,
     config::{CatalogPaths, Config},
     db::{self, Db},
@@ -71,6 +72,13 @@ async fn serve() -> Result<()> {
     let catalog = Catalog::load(&cfg.catalog_path, &images_dir, !cfg.allow_missing_images)
         .map_err(|e| anyhow::anyhow!("{e:#}"))?;
     let db = Db::open(&cfg.database_path).context("opening database")?;
+    let admin_oidc = AdminOidc::discover(
+        cfg.oidc_client_id.clone(),
+        secrecy::ExposeSecret::expose_secret(&cfg.oidc_client_secret).to_string(),
+        &cfg.base_url,
+    )
+    .await
+    .context("discovering Google OIDC configuration for /admin")?;
     let state = AppState {
         catalog: Arc::new(catalog),
         db,
@@ -80,6 +88,8 @@ async fn serve() -> Result<()> {
         limiter: Arc::new(RateLimiter::new(10, Duration::from_secs(60))),
         now: Arc::new(chrono::Utc::now),
         trust_proxy: cfg.trust_proxy,
+        admin_oidc: Arc::new(admin_oidc),
+        cookie_key: axum_extra::extract::cookie::Key::generate(),
     };
     let app = router(state, Some(StaticDirs { static_dir: cfg.static_dir, frontend_dir: cfg.frontend_dir }));
 

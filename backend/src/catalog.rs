@@ -16,6 +16,9 @@ struct RawCatalog {
     support: Support,
     fulfillment: RawFulfillment,
     items: Vec<RawItem>,
+    /// Google account emails allowed to sign in at /admin (case-insensitive).
+    #[serde(default)]
+    admins: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +51,8 @@ const DEFAULT_MAX_QTY: u32 = 20;
 pub struct Catalog {
     pub closes_at: DateTime<FixedOffset>,
     view: CatalogResponse,
+    /// Lowercased admin emails from catalog.yaml; not part of the public `view`.
+    admins: Vec<String>,
 }
 
 impl Catalog {
@@ -136,6 +141,7 @@ impl Catalog {
         let closes_at = closes_at.expect("checked above");
         Ok(Catalog {
             closes_at,
+            admins: raw.admins.iter().map(|e| e.to_lowercase()).collect(),
             view: CatalogResponse {
                 open: true,
                 closes_at: closes_at.to_rfc3339(),
@@ -151,6 +157,11 @@ impl Catalog {
 
     pub fn is_open(&self, now: DateTime<Utc>) -> bool {
         now <= self.closes_at
+    }
+
+    /// Whether `email` (compared case-insensitively) is in the catalog's `admins` list.
+    pub fn is_admin(&self, email: &str) -> bool {
+        self.admins.iter().any(|a| a == &email.to_lowercase())
     }
 
     /// The public view, with `open` set for the given time.
@@ -210,6 +221,21 @@ items:
         assert!(err.contains("not found"), "{err}");
         let typo = GOOD.replace("image_alt", "image_atl");
         assert!(Catalog::parse(&typo, |_| true).is_err());
+    }
+
+    #[test]
+    fn admin_emails_match_case_insensitively() {
+        let with_admins = GOOD.replacen("items:", "admins: [\"Admin@Example.com\"]\nitems:", 1);
+        let c = Catalog::parse(&with_admins, |_| true).unwrap();
+        assert!(c.is_admin("admin@example.com"));
+        assert!(c.is_admin("ADMIN@EXAMPLE.COM"));
+        assert!(!c.is_admin("other@example.com"));
+    }
+
+    #[test]
+    fn defaults_to_no_admins() {
+        let c = Catalog::parse(GOOD, |_| true).unwrap();
+        assert!(!c.is_admin("anyone@example.com"));
     }
 
     #[test]

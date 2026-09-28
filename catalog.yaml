@@ -151,3 +151,7 @@ items:
 support:
     email: support@troop15.org
     phone: 216-555-1234
+
+# Google account email addresses (matched case-insensitively) allowed to sign in at /admin
+# to download the order CSV export.
+admins: []

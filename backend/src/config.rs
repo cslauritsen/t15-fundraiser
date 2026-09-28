@@ -13,6 +13,10 @@ pub struct Config {
     pub frontend_dir: PathBuf,
     pub stripe_secret_key: SecretString,
     pub stripe_webhook_secret: SecretString,
+    /// Google OAuth2 client id for the /admin OIDC login.
+    pub oidc_client_id: String,
+    /// Google OAuth2 client secret for the /admin OIDC login.
+    pub oidc_client_secret: SecretString,
     /// Trust `X-Forwarded-For` for rate limiting (only behind a reverse proxy).
     pub trust_proxy: bool,
     pub allow_missing_images: bool,
@@ -24,6 +28,21 @@ fn var(name: &str) -> Option<String> {
 
 fn required(name: &str) -> Result<String> {
     var(name).with_context(|| format!("missing required environment variable {name}"))
+}
+
+/// Reads a secret from `env_name` if set (non-empty), otherwise from the file at `file_path`
+/// (e.g. a Docker/Podman secret mounted at /run/secrets/...). Errors if neither is available.
+fn required_secret(env_name: &str, file_path: &str) -> Result<String> {
+    if let Some(v) = var(env_name) {
+        return Ok(v);
+    }
+    let text = std::fs::read_to_string(file_path)
+        .with_context(|| format!("missing {env_name} and could not read secret file {file_path}"))?;
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        bail!("secret file {file_path} is empty and {env_name} is not set");
+    }
+    Ok(text)
 }
 
 fn flag(name: &str) -> bool {
@@ -53,6 +72,8 @@ impl Config {
             frontend_dir: var("FRONTEND_DIR").unwrap_or_else(|| "./frontend/dist".into()).into(),
             stripe_secret_key: stripe_secret_key.into(),
             stripe_webhook_secret: required("STRIPE_WEBHOOK_SECRET")?.into(),
+            oidc_client_id: required_secret("OIDC_CLIENT_ID", "/run/secrets/client_id")?,
+            oidc_client_secret: required_secret("OIDC_CLIENT_SECRET", "/run/secrets/client_secret")?.into(),
             trust_proxy: flag("TRUST_PROXY"),
             allow_missing_images: flag("ALLOW_MISSING_IMAGES"),
         })

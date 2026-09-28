@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, atomic::{AtomicI64, Ordering}};
 use std::time::Duration;
 use t15_fundraiser::{
     AppState,
+    admin::AdminOidc,
     catalog::Catalog,
     db::{self, Db},
     ratelimit::RateLimiter,
@@ -95,6 +96,8 @@ fn harness() -> Harness {
         limiter: Arc::new(RateLimiter::new(10, Duration::from_secs(60))),
         now: Arc::new(move || Utc.timestamp_opt(c.load(Ordering::SeqCst), 0).unwrap()),
         trust_proxy: false,
+        admin_oidc: Arc::new(AdminOidc::dummy_for_tests("https://fundraiser.test")),
+        cookie_key: axum_extra::extract::cookie::Key::generate(),
     };
     Harness { app: router(state, None), db, stripe, clock }
 }
@@ -395,6 +398,55 @@ async fn unknown_api_paths_are_json_404() {
     let (s, body) = send(&h, Method::GET, "/api/nope", None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
     assert_eq!(body["code"], "not_found");
+}
+
+#[tokio::test]
+async fn admin_page_without_session_redirects_to_google_login() {
+    let h = harness();
+    let req = Request::builder().method(Method::GET).uri("/admin").body(Body::empty()).unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let location = resp.headers().get("location").unwrap().to_str().unwrap();
+    assert!(location.starts_with("https://accounts.google.com/"), "{location}");
+    // A short-lived, encrypted flow cookie is set to carry CSRF/nonce/PKCE state to the callback.
+    let set_cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+    assert!(set_cookie.starts_with("admin_oidc_flow="), "{set_cookie}");
+    assert!(set_cookie.contains("HttpOnly"), "{set_cookie}");
+}
+
+#[tokio::test]
+async fn admin_export_without_session_redirects_to_admin() {
+    let h = harness();
+    let req = Request::builder().method(Method::GET).uri("/admin/export.csv").body(Body::empty()).unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(resp.headers().get("location").unwrap(), "/admin");
+}
+
+#[tokio::test]
+async fn admin_export_with_bogus_cookie_is_treated_as_signed_out() {
+    let h = harness();
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/admin/export.csv")
+        .header("cookie", "admin_session=not-a-valid-encrypted-value")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(resp.headers().get("location").unwrap(), "/admin");
+}
+
+#[tokio::test]
+async fn admin_logout_clears_session_and_redirects() {
+    let h = harness();
+    let req = Request::builder().method(Method::GET).uri("/admin/logout").body(Body::empty()).unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(resp.headers().get("location").unwrap(), "/admin");
+    let set_cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+    assert!(set_cookie.starts_with("admin_session="), "{set_cookie}");
+    assert!(set_cookie.contains("Max-Age=0"), "{set_cookie}");
 }
 
 #[tokio::test]

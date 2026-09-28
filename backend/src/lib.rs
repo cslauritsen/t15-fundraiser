@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod catalog;
 pub mod config;
 pub mod db;
@@ -8,12 +9,14 @@ pub mod stripe;
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, FromRef, Path, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
+use admin::AdminOidc;
+use axum_extra::extract::cookie::Key;
 use catalog::Catalog;
 use chrono::{DateTime, Utc};
 use db::{Db, PaidOutcome, ts};
@@ -51,6 +54,15 @@ pub struct AppState {
     pub limiter: Arc<RateLimiter>,
     pub now: Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>,
     pub trust_proxy: bool,
+    pub admin_oidc: Arc<AdminOidc>,
+    /// Encrypts the `/admin` session and login-flow cookies.
+    pub cookie_key: Key,
+}
+
+impl FromRef<AppState> for Key {
+    fn from_ref(state: &AppState) -> Self {
+        state.cookie_key.clone()
+    }
 }
 
 /// Where static files live; `None` in tests.
@@ -101,6 +113,7 @@ pub fn router(state: AppState, dirs: Option<StaticDirs>) -> Router {
         .route("/api/orders/{id}/status", get(order_status))
         .route("/api/stripe/webhook", post(webhook))
         .merge(checkout)
+        .merge(admin::routes())
         .route("/api/{*rest}", any(|| async { ApiError::not_found() }));
 
     if let Some(d) = dirs {
