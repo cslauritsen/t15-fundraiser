@@ -154,4 +154,6 @@ support:
 
 # Google account email addresses (matched case-insensitively) allowed to sign in at /admin
 # to download the order CSV export.
-admins: []
+admins: 
+ - csl4jc@gmail.com
+

@@ -284,7 +284,9 @@ async fn admin_callback(State(st): State<AppState>, jar: PrivateCookieJar, Query
 
 async fn admin_logout(jar: PrivateCookieJar) -> Response {
     let jar = jar.add(expired_cookie(SESSION_COOKIE));
-    (jar, Redirect::to("/admin")).into_response()
+    // Redirect to the homepage rather than back to /admin: some password managers auto-follow
+    // a login redirect and would immediately sign back in, making logout look like a no-op loop.
+    (jar, Redirect::to("/")).into_response()
 }
 
 async fn admin_export(State(st): State<AppState>, jar: PrivateCookieJar) -> Response {
