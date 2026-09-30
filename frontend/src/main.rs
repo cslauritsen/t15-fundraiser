@@ -54,7 +54,7 @@ fn SiteHeader() -> impl IntoView {
                     "☰"
                 </button>
             </div>
-            <p>{move || if is_fee() { "A year of campouts for our scouts" } else { "Fresh wreaths, garland and more — supporting our scouts" }}</p>
+            <p>{move || if is_fee() { "A year of campouts for one payment" } else { "Fresh wreaths, garland and more — supporting our scouts" }}</p>
             <Show when=move || menu_open.get()>
                 <nav class="menu" aria-label="Main menu">
                     <A href="/customer-service" on:click=move |_| menu_open.set(false)>"Customer service"</A>
