@@ -125,6 +125,9 @@ pub fn build_session_params(req: &SessionRequest) -> Vec<(String, String)> {
     add("metadata[order_id]".into(), req.order_id.clone());
     add("payment_intent_data[metadata][order_id]".into(), req.order_id.clone());
     add("payment_intent_data[description]".into(), req.description.clone());
+    // In live mode Stripe sends a receipt to this address even if the dashboard's
+    // "Successful payments" customer email setting is off.
+    add("payment_intent_data[receipt_email]".into(), req.email.clone());
     for (k, v) in &req.metadata {
         add(format!("metadata[{k}]"), v.clone());
     }
@@ -290,5 +293,6 @@ mod tests {
         assert_eq!(get("payment_intent_data[description]"), Some("Troop fundraiser order o1"));
         assert_eq!(get("metadata[order_id]"), Some("o1"));
         assert_eq!(get("metadata[kind]"), Some("test"));
+        assert_eq!(get("payment_intent_data[receipt_email]"), Some("a@b.co"));
     }
 }

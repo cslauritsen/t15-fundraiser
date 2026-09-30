@@ -223,8 +223,10 @@ with a link back. There is no API call.
 ## 8. Receipts and email
 
 With one Stripe line item per scout, Stripe's automatic receipt already lists each scout and the
-total. That covers confirmation email without adding mail infrastructure. Confirm that
-"Successful payments" customer emails are enabled in the Stripe dashboard (live mode).
+total. That covers confirmation email without adding mail infrastructure.
+`build_session_params` sets `payment_intent_data[receipt_email]` to the payer's email. In live
+mode, Stripe then sends the receipt even when the dashboard's "Successful payments" customer
+email setting is off. Test mode never sends receipts.
 
 ## 9. Admin report and export
 
