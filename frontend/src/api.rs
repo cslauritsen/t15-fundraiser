@@ -1,5 +1,8 @@
 use gloo_net::http::Request;
-use shared::{CatalogResponse, CheckoutRequest, CheckoutResponse, ErrorResponse, OrderStatusResponse};
+use shared::{
+    AnnualFeeInfo, CatalogResponse, CheckoutRequest, CheckoutResponse, ErrorResponse, FeeCheckoutRequest,
+    FeeStatusResponse, OrderStatusResponse,
+};
 
 /// Either a structured error from our backend or a transport problem.
 #[derive(Debug, Clone)]
@@ -45,6 +48,30 @@ pub async fn checkout(req: &CheckoutRequest) -> Result<CheckoutResponse, ApiErro
 
 pub async fn order_status(order_id: &str, session_id: &str) -> Result<OrderStatusResponse, ApiError> {
     let resp = Request::get(&format!("/api/orders/{order_id}/status"))
+        .query([("session_id", session_id)])
+        .send()
+        .await
+        .map_err(|_| ApiError::Network)?;
+    read(resp).await
+}
+
+pub async fn fetch_annual_fee() -> Result<AnnualFeeInfo, ApiError> {
+    let resp = Request::get("/api/annual-fee").send().await.map_err(|_| ApiError::Network)?;
+    read(resp).await
+}
+
+pub async fn fee_checkout(req: &FeeCheckoutRequest) -> Result<CheckoutResponse, ApiError> {
+    let resp = Request::post("/api/annual-fee/checkout")
+        .json(req)
+        .map_err(|_| ApiError::Network)?
+        .send()
+        .await
+        .map_err(|_| ApiError::Network)?;
+    read(resp).await
+}
+
+pub async fn fee_status(payment_id: &str, session_id: &str) -> Result<FeeStatusResponse, ApiError> {
+    let resp = Request::get(&format!("/api/annual-fee/{payment_id}/status"))
         .query([("session_id", session_id)])
         .send()
         .await

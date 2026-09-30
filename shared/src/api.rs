@@ -188,3 +188,110 @@ pub fn format_cents(cents: i64) -> String {
     let c = cents.abs();
     format!("{sign}${}.{:02}", c / 100, c % 100)
 }
+
+// ---------------------------------------------------------------------------------------------
+// Annual camping fee
+// ---------------------------------------------------------------------------------------------
+
+/// `GET /api/annual-fee`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnnualFeeInfo {
+    pub scouting_year: String,
+    /// Per scout.
+    pub amount_cents: i64,
+    pub max_scouts: u32,
+    #[serde(default)]
+    pub note: Option<String>,
+    /// RFC 3339 with the troop's local offset; display only.
+    pub closes_at: String,
+    pub open: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeeScout {
+    pub first_name: String,
+    pub last_name: String,
+}
+
+impl FeeScout {
+    pub fn full_name(&self) -> String {
+        format!("{} {}", self.first_name, self.last_name)
+    }
+}
+
+/// `POST /api/annual-fee/checkout`. There is deliberately no amount: it comes from the config.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FeeCheckoutRequest {
+    pub payer_name: String,
+    pub payer_email: String,
+    pub scouts: Vec<FeeScout>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeeStatus {
+    Paid,
+    /// Money arrived but the metadata or amount didn't check out; the treasurer confirms.
+    NeedsReview,
+    /// No payment recorded yet and the Stripe session is still open.
+    Pending,
+    /// The Stripe session expired unpaid.
+    Expired,
+}
+
+impl FeeStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FeeStatus::Paid => "paid",
+            FeeStatus::NeedsReview => "needs_review",
+            FeeStatus::Pending => "pending",
+            FeeStatus::Expired => "expired",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "paid" => Some(FeeStatus::Paid),
+            "needs_review" => Some(FeeStatus::NeedsReview),
+            "pending" => Some(FeeStatus::Pending),
+            "expired" => Some(FeeStatus::Expired),
+            _ => None,
+        }
+    }
+}
+
+/// `GET /api/annual-fee/{payment_id}/status`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeeStatusResponse {
+    pub status: FeeStatus,
+    pub scouting_year: String,
+    pub scouts: Vec<FeeScout>,
+    pub total_cents: i64,
+    pub payer_email: String,
+}
+
+/// Format an RFC 3339 timestamp in its own offset, e.g.
+/// `"2027-01-31T23:59:59-05:00"` -> `"January 31, 2027 at 11:59 PM"`.
+/// The config writes the troop's local offset, so this is the troop's local time without
+/// needing a time zone database in the browser. `None` if the string doesn't parse.
+pub fn format_local_datetime(rfc3339: &str) -> Option<String> {
+    const MONTHS: [&str; 12] = [
+        "January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+        "November", "December",
+    ];
+    let (date, time) = rfc3339.split_once(['T', 't', ' '])?;
+    let mut d = date.splitn(3, '-');
+    let (year, month, day) = (d.next()?, d.next()?.parse::<usize>().ok()?, d.next()?.parse::<u32>().ok()?);
+    let mut t = time.splitn(3, ':');
+    let (hour, minute) = (t.next()?.parse::<u32>().ok()?, t.next()?.get(..2)?.parse::<u32>().ok()?);
+    if year.len() != 4 || !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
+        return None;
+    }
+    let (h12, ampm) = match hour {
+        0 => (12, "AM"),
+        1..=11 => (hour, "AM"),
+        12 => (12, "PM"),
+        _ => (hour - 12, "PM"),
+    };
+    Some(format!("{} {day}, {year} at {h12}:{minute:02} {ampm}", MONTHS[month - 1]))
+}

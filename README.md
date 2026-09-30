@@ -80,7 +80,9 @@ Live runs from `docker-compose.live.yml` (project `t15-fundraiser-live`, port 80
 
     t15-fundraiser [serve]       run the server
     t15-fundraiser export        paid + needs_review orders as CSV on stdout
-    t15-fundraiser check-catalog validate catalog.yaml, list items
+    t15-fundraiser export-annual-fees [--year 2026-2027]
+                                 annual camping fee payments (one row per scout) as CSV on stdout
+    t15-fundraiser check-catalog validate catalog.yaml (incl. the annual_fee block), list items
 
 ## Admin CSV export (web)
 
@@ -98,6 +100,45 @@ Visiting `/admin` while signed out redirects into the Google login; on success i
 with a "Download orders CSV" link (`/admin/export.csv`) and a logout link. The session is kept in
 an encrypted, HttpOnly cookie (no server-side session store), and is re-checked against the
 `admins` list on every request, so removing an email from catalog.yaml revokes access immediately.
+
+## Annual camping fee
+
+`/annual-fee` lets a parent pay the troop's annual camping fee for one or more scouts in a single
+Stripe Checkout. It isn't linked from the shop; share the URL directly. Configure it with a
+top-level block in `catalog.yaml` (remove the block to disable the page and its API):
+
+```yaml
+annual_fee:
+  scouting_year: "2026-2027"               # free text, 1-20 characters; stored on every payment
+  amount_cents: 5000                       # per scout, > 0; the troop absorbs Stripe's fees
+  closes_at: "2027-01-31T23:59:59-05:00"   # required, RFC 3339 with explicit offset
+  max_scouts: 8                            # scouts per checkout, 1-10
+  note: "Covers campouts from September through August."   # optional
+```
+
+`closes_at` is separate from the greenery `closes_at`: after it the page says payments are closed
+and `POST /api/annual-fee/checkout` returns 409. Sessions started before the cutoff can still be
+paid, and webhooks are always processed. The offset written in `closes_at` is treated as the
+troop's local time zone for displayed dates. The server refuses to start if `closes_at` doesn't parse.
+
+The cart lives only in the parent's browser (`localStorage`); nothing is stored until Stripe
+reports the payment, then one `annual_fees` row per scout is written (by the webhook, or by the
+success page's status check if the webhook is late). Payments whose amount or metadata don't
+check out are stored as `needs_review`. Stripe's receipt (one line per scout) is the only
+confirmation email, so make sure "Successful payments" customer emails are enabled in the Stripe
+dashboard (live mode). Refunds are done in the Stripe dashboard.
+
+The existing webhook endpoint and events cover fees; no Stripe configuration changes are needed.
+
+**Admin.** When signed in, `/admin` also shows an "Annual camping fees" summary for the configured
+year (scouts paid, total collected before Stripe fees, checkouts, needs-review count, closing
+date) with links to:
+
+- `/admin/annual-fees?year=…`: the full report for a year (defaults to the configured one; links
+  to every year on file). Needs-review rows are listed first; paid scouts are sorted by last name
+  and flagged "possible duplicate" when the same scout was paid for in more than one checkout.
+- `/admin/annual-fees.csv?year=…`: the same CSV as `t15-fundraiser export-annual-fees`
+  (all years without `year`).
 
 ## Tests
 

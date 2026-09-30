@@ -8,7 +8,7 @@ use shared::{
 };
 use std::sync::Arc;
 
-fn redirect(url: &str) {
+pub(crate) fn redirect(url: &str) {
     if let Some(w) = web_sys::window() {
         let _ = w.location().set_href(url);
     }
@@ -51,7 +51,7 @@ fn Closed(catalog: CatalogResponse) -> impl IntoView {
 }
 
 #[component]
-fn Field(
+pub(crate) fn Field(
     label: &'static str,
     name: &'static str,
     value: RwSignal<String>,

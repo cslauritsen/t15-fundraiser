@@ -7,11 +7,13 @@ use hmac::{Hmac, Mac};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 use sha2::Sha256;
+use std::collections::HashMap;
 
 /// Stripe API version every request is pinned to, so behaviour doesn't change when the account's
 /// default version is upgraded. Bump deliberately after reading https://docs.stripe.com/changelog.
 pub const STRIPE_API_VERSION: &str = "2026-08-26.dahlia";
 
+#[derive(Debug, Clone)]
 pub struct SessionLine {
     pub name: String,
     pub unit_amount: i64,
@@ -19,10 +21,17 @@ pub struct SessionLine {
     pub image_url: Option<String>,
 }
 
+#[derive(Debug, Clone)]
 pub struct SessionRequest {
+    /// Our reference (an order id, or an `af_` fee payment id): `client_reference_id` and
+    /// `metadata[order_id]`.
     pub order_id: String,
     pub email: String,
+    /// The PaymentIntent description shown in the Stripe dashboard.
+    pub description: String,
     pub lines: Vec<SessionLine>,
+    /// Extra `metadata[key]` entries on the session, besides `order_id`.
+    pub metadata: Vec<(String, String)>,
     pub success_url: String,
     pub cancel_url: String,
     /// Unix seconds; Stripe requires 30 minutes to 24 hours from now.
@@ -35,7 +44,7 @@ pub struct CreatedSession {
 }
 
 /// What we need from a Checkout Session object (webhook payload or API response).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionInfo {
     pub id: String,
     pub order_id: Option<String>,
@@ -45,6 +54,9 @@ pub struct SessionInfo {
     pub payment_status: String,
     pub amount_total: i64,
     pub payment_intent: Option<String>,
+    pub metadata: HashMap<String, String>,
+    /// `customer_details.email` (what the buyer ended up with), else `customer_email`.
+    pub customer_email: Option<String>,
 }
 
 impl SessionInfo {
@@ -58,6 +70,16 @@ impl SessionInfo {
             payment_status: s("payment_status").unwrap_or_default(),
             amount_total: v.get("amount_total").and_then(Value::as_i64).unwrap_or(-1),
             payment_intent: s("payment_intent"),
+            metadata: v
+                .get("metadata")
+                .and_then(Value::as_object)
+                .map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+                .unwrap_or_default(),
+            customer_email: v
+                .pointer("/customer_details/email")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| s("customer_email")),
         })
     }
 }
@@ -102,7 +124,10 @@ pub fn build_session_params(req: &SessionRequest) -> Vec<(String, String)> {
     add("client_reference_id".into(), req.order_id.clone());
     add("metadata[order_id]".into(), req.order_id.clone());
     add("payment_intent_data[metadata][order_id]".into(), req.order_id.clone());
-    add("payment_intent_data[description]".into(), format!("Troop fundraiser order {}", req.order_id));
+    add("payment_intent_data[description]".into(), req.description.clone());
+    for (k, v) in &req.metadata {
+        add(format!("metadata[{k}]"), v.clone());
+    }
     add("success_url".into(), req.success_url.clone());
     add("cancel_url".into(), req.cancel_url.clone());
     add("expires_at".into(), req.expires_at.to_string());
@@ -228,11 +253,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_metadata_and_customer_email() {
+        let v = serde_json::json!({
+            "id": "cs_1", "customer_email": "typed@example.com",
+            "customer_details": {"email": "final@example.com"},
+            "metadata": {"kind": "annual_fee", "scout_0": "Alex\tSmith", "odd": 5}
+        });
+        let s = SessionInfo::from_json(&v).unwrap();
+        assert_eq!(s.customer_email.as_deref(), Some("final@example.com"));
+        assert_eq!(s.metadata.get("scout_0").map(String::as_str), Some("Alex\tSmith"));
+        assert!(!s.metadata.contains_key("odd"), "non-string values are dropped");
+
+        let v = serde_json::json!({"id": "cs_2", "customer_email": "typed@example.com", "customer_details": null});
+        assert_eq!(SessionInfo::from_json(&v).unwrap().customer_email.as_deref(), Some("typed@example.com"));
+    }
+
+    #[test]
     fn session_params_shape() {
         let req = SessionRequest {
             order_id: "o1".into(),
             email: "a@b.co".into(),
+            description: "Troop fundraiser order o1".into(),
             lines: vec![SessionLine { name: "Wreath".into(), unit_amount: 3500, qty: 2, image_url: None }],
+            metadata: vec![("kind".into(), "test".into())],
             success_url: "https://x/success".into(),
             cancel_url: "https://x/cancel".into(),
             expires_at: 99,
@@ -244,5 +287,8 @@ mod tests {
         assert!(!p.iter().any(|(k, _)| k.starts_with("shipping_address_collection")));
         assert_eq!(get("client_reference_id"), Some("o1"));
         assert!(get("line_items[0][price_data][product_data][images][0]").is_none());
+        assert_eq!(get("payment_intent_data[description]"), Some("Troop fundraiser order o1"));
+        assert_eq!(get("metadata[order_id]"), Some("o1"));
+        assert_eq!(get("metadata[kind]"), Some("test"));
     }
 }

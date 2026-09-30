@@ -1,4 +1,4 @@
-use crate::db::OrderRow;
+use crate::db::{AnnualFeeRow, OrderRow};
 use anyhow::Result;
 use shared::format_cents;
 use std::collections::BTreeSet;
@@ -63,6 +63,43 @@ pub fn write_csv(orders: &[OrderRow], item_ids: &[String], mut w: impl Write) ->
             o.review_reason.clone().unwrap_or_default(),
         ]);
         out.write_record(&row)?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+/// One row per scout, in the order given (`db::list_annual_fees` sorts by year, last, first).
+/// Shared by `t15-fundraiser export-annual-fees` and `/admin/annual-fees.csv`.
+pub fn write_annual_fees_csv(rows: &[AnnualFeeRow], mut w: impl Write) -> Result<()> {
+    w.write_all(b"\xEF\xBB\xBF")?;
+    let mut out = csv::Writer::from_writer(w);
+    out.write_record([
+        "scouting_year",
+        "scout_last_name",
+        "scout_first_name",
+        "amount",
+        "status",
+        "paid_at",
+        "payer_name",
+        "payer_email",
+        "payment_id",
+        "stripe_payment_intent_id",
+        "review_reason",
+    ])?;
+    for r in rows {
+        out.write_record([
+            r.scouting_year.as_str(),
+            &r.scout_last_name,
+            &r.scout_first_name,
+            &format_cents(r.amount_cents),
+            r.status.as_str(),
+            &r.paid_at,
+            &r.payer_name,
+            &r.payer_email,
+            &r.payment_id,
+            r.stripe_payment_intent_id.as_deref().unwrap_or(""),
+            r.review_reason.as_deref().unwrap_or(""),
+        ])?;
     }
     out.flush()?;
     Ok(())

@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod annual_fee;
 pub mod catalog;
 pub mod config;
 pub mod db;
@@ -41,7 +42,7 @@ use tower_http::{
 };
 
 /// Stripe requires a session to live at least 30 minutes; add a minute of slack.
-const SESSION_TTL_SECS: i64 = 31 * 60;
+pub(crate) const SESSION_TTL_SECS: i64 = 31 * 60;
 const WEBHOOK_TOLERANCE_SECS: i64 = 300;
 
 #[derive(Clone)]
@@ -79,11 +80,11 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn new(status: StatusCode, code: &str, message: &str) -> Self {
+    pub(crate) fn new(status: StatusCode, code: &str, message: &str) -> Self {
         ApiError { status, body: ErrorResponse { code: code.into(), message: message.into(), fields: vec![] } }
     }
 
-    fn not_found() -> Self {
+    pub(crate) fn not_found() -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", "Not found.")
     }
 }
@@ -102,8 +103,10 @@ impl<E: Into<anyhow::Error>> From<E> for ApiError {
 }
 
 pub fn router(state: AppState, dirs: Option<StaticDirs>) -> Router {
+    // Both checkouts share one per-IP budget.
     let checkout = Router::new()
         .route("/api/checkout", post(checkout))
+        .route("/api/annual-fee/checkout", post(annual_fee::checkout))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .layer(DefaultBodyLimit::max(64 * 1024));
 
@@ -111,6 +114,8 @@ pub fn router(state: AppState, dirs: Option<StaticDirs>) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/catalog", get(catalog))
         .route("/api/orders/{id}/status", get(order_status))
+        .route("/api/annual-fee", get(annual_fee::info))
+        .route("/api/annual-fee/{payment_id}/status", get(annual_fee::status))
         .route("/api/stripe/webhook", post(webhook))
         .merge(checkout)
         .merge(admin::routes())
@@ -213,6 +218,7 @@ async fn checkout(
     let session_req = SessionRequest {
         order_id: order_id.clone(),
         email: order.email.clone(),
+        description: format!("Troop fundraiser order {order_id}"),
         lines: order
             .lines
             .iter()
@@ -223,6 +229,7 @@ async fn checkout(
                 image_url: public_images.then(|| format!("{}{}", st.base_url, l.image_url)),
             })
             .collect(),
+        metadata: Vec::new(),
         success_url: format!("{}/success?order={order_id}&session_id={{CHECKOUT_SESSION_ID}}", st.base_url),
         cancel_url: format!("{}/cancel?order={order_id}", st.base_url),
         expires_at: now.timestamp() + SESSION_TTL_SECS,
@@ -249,8 +256,8 @@ async fn checkout(
 }
 
 #[derive(Deserialize)]
-struct StatusQuery {
-    session_id: String,
+pub(crate) struct StatusQuery {
+    pub(crate) session_id: String,
 }
 
 async fn load_order(st: &AppState, id: &str) -> anyhow::Result<Option<db::OrderRow>> {
@@ -330,7 +337,13 @@ async fn webhook(State(st): State<AppState>, headers: HeaderMap, body: Bytes) ->
         "checkout.session.completed" | "checkout.session.async_payment_succeeded" => {
             let session = SessionInfo::from_json(&event["data"]["object"])
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "bad_payload", "Invalid payload."))?;
-            if session.payment_status == "paid" {
+            if annual_fee::is_fee_session(&session) {
+                if session.payment_status == "paid" {
+                    annual_fee::record_fee_payment(&st, Some((&event_id, &kind)), &session).await?;
+                } else {
+                    tracing::info!(session_id = session.id, payment_status = session.payment_status, "fee session completed but not yet paid");
+                }
+            } else if session.payment_status == "paid" {
                 let s = session.clone();
                 let (e, k) = (event_id.clone(), kind.clone());
                 let outcome = st.db.call(move |c| db::apply_paid(c, Some((&e, &k)), &s, &now_s)).await?;
@@ -342,7 +355,10 @@ async fn webhook(State(st): State<AppState>, headers: HeaderMap, body: Bytes) ->
         }
         "checkout.session.expired" => {
             if let Some(session) = SessionInfo::from_json(&event["data"]["object"]) {
-                if let Some(order_id) = session.order_id {
+                if annual_fee::is_fee_session(&session) {
+                    // Nothing was stored for an unpaid fee checkout, so there is nothing to expire.
+                    tracing::info!(session_id = session.id, "fee checkout expired unpaid");
+                } else if let Some(order_id) = session.order_id {
                     let (e, k) = (event_id.clone(), kind.clone());
                     st.db.call(move |c| db::apply_expired(c, Some((&e, &k)), &order_id, &now_s)).await?;
                 }

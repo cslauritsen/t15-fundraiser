@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, Utc};
 use serde::Deserialize;
-use shared::{CatalogItem, CatalogResponse, Fulfillment, Support};
+use shared::{AnnualFeeInfo, CatalogItem, CatalogResponse, Fulfillment, Support};
 use std::path::Path;
 
 #[derive(Deserialize)]
@@ -19,6 +19,20 @@ struct RawCatalog {
     /// Google account emails allowed to sign in at /admin (case-insensitive).
     #[serde(default)]
     admins: Vec<String>,
+    /// Annual camping fee page; the feature is disabled when absent.
+    #[serde(default)]
+    annual_fee: Option<RawAnnualFee>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAnnualFee {
+    scouting_year: String,
+    amount_cents: i64,
+    closes_at: String,
+    max_scouts: u32,
+    #[serde(default)]
+    note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +59,64 @@ struct RawItem {
 }
 
 const DEFAULT_MAX_QTY: u32 = 20;
+/// Stripe metadata allows 50 keys; each scout takes one, so keep well clear.
+const MAX_FEE_SCOUTS: u32 = 10;
+
+/// The validated `annual_fee` block. Its `closes_at` is independent of the greenery cutoff.
+#[derive(Debug, Clone)]
+pub struct AnnualFeeConfig {
+    pub scouting_year: String,
+    /// Per scout.
+    pub amount_cents: i64,
+    /// Written with the troop's local offset, which is also used to show local dates.
+    pub closes_at: DateTime<FixedOffset>,
+    pub max_scouts: u32,
+    pub note: Option<String>,
+}
+
+impl AnnualFeeConfig {
+    pub fn is_open(&self, now: DateTime<Utc>) -> bool {
+        now <= self.closes_at
+    }
+
+    pub fn view(&self, now: DateTime<Utc>) -> AnnualFeeInfo {
+        AnnualFeeInfo {
+            scouting_year: self.scouting_year.clone(),
+            amount_cents: self.amount_cents,
+            max_scouts: self.max_scouts,
+            note: self.note.clone(),
+            closes_at: self.closes_at.to_rfc3339(),
+            open: self.is_open(now),
+        }
+    }
+
+    fn parse(raw: RawAnnualFee, problems: &mut Vec<String>) -> Option<Self> {
+        let n = problems.len();
+        let year = raw.scouting_year.trim().to_string();
+        if !(1..=20).contains(&year.chars().count()) || year.chars().any(char::is_control) {
+            problems.push("annual_fee.scouting_year must be 1-20 characters".into());
+        }
+        if raw.amount_cents <= 0 {
+            problems.push("annual_fee.amount_cents must be > 0".into());
+        }
+        if !(1..=MAX_FEE_SCOUTS).contains(&raw.max_scouts) {
+            problems.push(format!("annual_fee.max_scouts must be 1-{MAX_FEE_SCOUTS}"));
+        }
+        let closes_at = DateTime::parse_from_rfc3339(&raw.closes_at)
+            .map_err(|e| {
+                problems.push(format!("annual_fee.closes_at {:?} is not RFC 3339 with an offset: {e}", raw.closes_at))
+            })
+            .ok();
+        let note = raw.note.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        (problems.len() == n).then(|| AnnualFeeConfig {
+            scouting_year: year,
+            amount_cents: raw.amount_cents,
+            closes_at: closes_at.expect("checked above"),
+            max_scouts: raw.max_scouts,
+            note,
+        })
+    }
+}
 
 /// Immutable, validated catalog. Loaded once at startup.
 #[derive(Debug)]
@@ -53,6 +125,7 @@ pub struct Catalog {
     view: CatalogResponse,
     /// Lowercased admin emails from catalog.yaml; not part of the public `view`.
     admins: Vec<String>,
+    pub annual_fee: Option<AnnualFeeConfig>,
 }
 
 impl Catalog {
@@ -135,6 +208,8 @@ impl Catalog {
             });
         }
 
+        let annual_fee = raw.annual_fee.and_then(|f| AnnualFeeConfig::parse(f, &mut problems));
+
         if !problems.is_empty() {
             bail!("{} problem(s):\n  - {}", problems.len(), problems.join("\n  - "));
         }
@@ -142,6 +217,7 @@ impl Catalog {
         Ok(Catalog {
             closes_at,
             admins: raw.admins.iter().map(|e| e.to_lowercase()).collect(),
+            annual_fee,
             view: CatalogResponse {
                 open: true,
                 closes_at: closes_at.to_rfc3339(),
@@ -236,6 +312,55 @@ items:
     fn defaults_to_no_admins() {
         let c = Catalog::parse(GOOD, |_| true).unwrap();
         assert!(!c.is_admin("anyone@example.com"));
+    }
+
+    const FEE: &str = r#"
+annual_fee:
+  scouting_year: "2026-2027"
+  amount_cents: 5000
+  closes_at: "2027-01-31T23:59:59-05:00"
+  max_scouts: 8
+  note: "Covers campouts."
+"#;
+
+    #[test]
+    fn annual_fee_is_optional() {
+        assert!(Catalog::parse(GOOD, |_| true).unwrap().annual_fee.is_none());
+    }
+
+    #[test]
+    fn parses_annual_fee_block_with_its_own_cutoff() {
+        let c = Catalog::parse(&format!("{GOOD}{FEE}"), |_| true).unwrap();
+        let f = c.annual_fee.clone().unwrap();
+        assert_eq!((f.scouting_year.as_str(), f.amount_cents, f.max_scouts), ("2026-2027", 5000, 8));
+        assert_eq!(f.note.as_deref(), Some("Covers campouts."));
+        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        // Greenery is closed by November, fees are still open.
+        assert!(!c.is_open(at("2026-11-15T12:00:00Z")) && f.is_open(at("2026-11-15T12:00:00Z")));
+        assert!(f.is_open(at("2027-01-31T23:59:59-05:00")));
+        assert!(!f.is_open(at("2027-02-01T00:00:00-05:00")));
+        let v = f.view(at("2027-02-01T00:00:00-05:00"));
+        assert_eq!((v.open, v.closes_at.as_str()), (false, "2027-01-31T23:59:59-05:00"));
+    }
+
+    #[test]
+    fn bad_annual_fee_block_is_rejected() {
+        let bad = FEE
+            .replace("2027-01-31T23:59:59-05:00", "2027-01-31 midnight")
+            .replace("amount_cents: 5000", "amount_cents: 0")
+            .replace("max_scouts: 8", "max_scouts: 11")
+            .replace("2026-2027", "");
+        let err = Catalog::parse(&format!("{GOOD}{bad}"), |_| true).unwrap_err().to_string();
+        assert!(err.contains("4 problem"), "{err}");
+        for want in ["annual_fee.closes_at", "amount_cents", "max_scouts", "scouting_year"] {
+            assert!(err.contains(want), "{want}: {err}");
+        }
+        // closes_at is required.
+        let missing = FEE.replace("  closes_at: \"2027-01-31T23:59:59-05:00\"\n", "");
+        assert!(Catalog::parse(&format!("{GOOD}{missing}"), |_| true).is_err());
+        // Typos are rejected like the rest of the catalog.
+        let typo = FEE.replace("max_scouts", "max_scout");
+        assert!(Catalog::parse(&format!("{GOOD}{typo}"), |_| true).is_err());
     }
 
     #[test]

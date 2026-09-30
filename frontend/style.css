@@ -64,3 +64,11 @@ button.primary:disabled { opacity: .6; cursor: default; }
 .support-page { max-width: 36rem; margin: 0 auto; }
 .support-page .summary p { margin: .4rem 0; }
 a { color: var(--green); }
+/* Annual camping fee */
+.fee-row { align-items: end; }
+@media (min-width: 36rem) { .fee-row { grid-template-columns: 1fr 1fr auto; } }
+button.secondary { margin-top: .75rem; padding: .6rem 1rem; font: inherit; font-weight: 600; color: var(--green); background: #fff; border: 1px solid var(--green); border-radius: 6px; cursor: pointer; }
+button.secondary:hover { background: #e8f1ea; }
+.fee-cart li { align-items: center; }
+.fee-line { display: inline-flex; align-items: center; gap: .75rem; white-space: nowrap; }
+button.link { padding: .25rem 0; font: inherit; font-size: .9rem; color: var(--error); background: none; border: 0; text-decoration: underline; cursor: pointer; }

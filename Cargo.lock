@@ -993,6 +993,7 @@ dependencies = [
  "leptos",
  "leptos_router",
  "serde",
+ "serde_json",
  "shared",
  "web-sys",
 ]

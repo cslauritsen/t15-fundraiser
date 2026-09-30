@@ -298,6 +298,111 @@ pub fn validate_checkout(
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Annual camping fee
+// ---------------------------------------------------------------------------------------------
+
+/// Scout first/last name limit, in characters.
+pub const MAX_SCOUT_NAME: usize = 50;
+/// Payer name limit, in characters.
+pub const MAX_PAYER_NAME: usize = 100;
+
+/// Trim and collapse whitespace; 1..=`max` characters; no control characters. Control characters
+/// are checked before collapsing, so a tab inside a name is rejected rather than turned into a
+/// space (tab separates first and last name in the Stripe metadata).
+pub fn normalize_person_name(input: &str, label: &str, max: usize) -> Result<String, String> {
+    let t = input.trim();
+    if t.is_empty() {
+        return Err(format!("{label} is required."));
+    }
+    if t.chars().any(char::is_control) {
+        return Err(format!("{label} contains invalid characters."));
+    }
+    let collapsed = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > max {
+        return Err(format!("{label} is too long (max {max} characters)."));
+    }
+    Ok(collapsed)
+}
+
+/// Validate one scout row. Field names are `first_name` and `last_name`.
+pub fn validate_fee_scout(s: &FeeScout) -> Result<FeeScout, Vec<FieldError>> {
+    let mut errs = Errs(Vec::new());
+    let mut name = |field: &str, input: &str, label: &str| {
+        normalize_person_name(input, label, MAX_SCOUT_NAME).unwrap_or_else(|m| {
+            errs.add(field, m);
+            String::new()
+        })
+    };
+    let first_name = name("first_name", &s.first_name, "Scout first name");
+    let last_name = name("last_name", &s.last_name, "Scout last name");
+    if errs.0.is_empty() { Ok(FeeScout { first_name, last_name }) } else { Err(errs.0) }
+}
+
+/// Case-folded identity used for duplicate detection (names are already normalized).
+pub fn fee_scout_key(s: &FeeScout) -> (String, String) {
+    (s.first_name.to_lowercase(), s.last_name.to_lowercase())
+}
+
+/// Why `candidate` can't be added to `cart`, if it can't. Used by the SPA's "Add scout" button.
+pub fn fee_cart_add_error(cart: &[FeeScout], candidate: &FeeScout, max_scouts: u32) -> Option<String> {
+    if cart.len() >= max_scouts as usize {
+        return Some(format!("You can pay for at most {max_scouts} scouts per checkout."));
+    }
+    let key = fee_scout_key(candidate);
+    cart.iter()
+        .any(|s| fee_scout_key(s) == key)
+        .then(|| format!("{} is already in the cart.", candidate.full_name()))
+}
+
+/// A fee checkout request after normalization.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidatedFeeCheckout {
+    pub payer_name: String,
+    pub payer_email: String,
+    pub scouts: Vec<FeeScout>,
+}
+
+/// Validate a fee checkout. Fields: `payer_name`, `payer_email`, `scouts` (count and duplicates),
+/// and `scouts[i].first_name` / `scouts[i].last_name`.
+pub fn validate_fee_checkout(req: &FeeCheckoutRequest, max_scouts: u32) -> Result<ValidatedFeeCheckout, Vec<FieldError>> {
+    let mut errs = Errs(Vec::new());
+
+    let payer_name = normalize_person_name(&req.payer_name, "Your name", MAX_PAYER_NAME).unwrap_or_else(|m| {
+        errs.add("payer_name", m);
+        String::new()
+    });
+    let payer_email = normalize_email(&req.payer_email).unwrap_or_else(|m| {
+        errs.add("payer_email", m);
+        String::new()
+    });
+
+    if req.scouts.is_empty() {
+        errs.add("scouts", "Add at least one scout.");
+    } else if req.scouts.len() > max_scouts as usize {
+        errs.add("scouts", format!("You can pay for at most {max_scouts} scouts per checkout."));
+    }
+    let mut scouts: Vec<FeeScout> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (i, s) in req.scouts.iter().enumerate() {
+        match validate_fee_scout(s) {
+            Ok(s) => {
+                if !seen.insert(fee_scout_key(&s)) {
+                    errs.add("scouts", format!("{} is listed more than once.", s.full_name()));
+                }
+                scouts.push(s);
+            }
+            Err(fs) => {
+                for f in fs {
+                    errs.add(&format!("scouts[{i}].{}", f.field), f.message);
+                }
+            }
+        }
+    }
+
+    if errs.0.is_empty() { Ok(ValidatedFeeCheckout { payer_name, payer_email, scouts }) } else { Err(errs.0) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,5 +629,91 @@ mod tests {
     fn cents_format() {
         assert_eq!(format_cents(3500), "$35.00");
         assert_eq!(format_cents(1205), "$12.05");
+    }
+
+    fn scout(first: &str, last: &str) -> FeeScout {
+        FeeScout { first_name: first.into(), last_name: last.into() }
+    }
+
+    fn fee_request(scouts: Vec<FeeScout>) -> FeeCheckoutRequest {
+        FeeCheckoutRequest { payer_name: "  Pat   Smith ".into(), payer_email: " Pat@Example.COM ".into(), scouts }
+    }
+
+    fn fee_fields(r: Result<ValidatedFeeCheckout, Vec<FieldError>>) -> Vec<String> {
+        r.unwrap_err().into_iter().map(|e| e.field).collect()
+    }
+
+    #[test]
+    fn person_names_are_trimmed_collapsed_and_capped() {
+        assert_eq!(normalize_person_name("  Mary   Ann  ", "Name", 50).unwrap(), "Mary Ann");
+        assert_eq!(normalize_person_name("O'Brien-Smith Jr.", "Name", 50).unwrap(), "O'Brien-Smith Jr.");
+        // Other printable Unicode is accepted.
+        assert_eq!(normalize_person_name("Zoë 李", "Name", 50).unwrap(), "Zoë 李");
+        assert!(normalize_person_name("   ", "Name", 50).is_err());
+        assert!(normalize_person_name(&"é".repeat(50), "Name", 50).is_ok(), "characters, not bytes");
+        assert!(normalize_person_name(&"a".repeat(51), "Name", 50).is_err());
+        // Collapsing happens before the length check.
+        assert!(normalize_person_name(&format!("{}      {}", "a".repeat(24), "b".repeat(25)), "Name", 50).is_ok());
+        // Control characters, including the metadata's tab separator, are rejected.
+        for bad in ["Pat\tSmith", "Pat\nSmith", "Pat\u{0}"] {
+            assert!(normalize_person_name(bad, "Name", 50).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn valid_fee_checkout_is_normalized() {
+        let v = validate_fee_checkout(&fee_request(vec![scout(" Alex ", "Smith"), scout("Jamie", " Smith")]), 8).unwrap();
+        assert_eq!(v.payer_name, "Pat Smith");
+        assert_eq!(v.payer_email, "pat@example.com");
+        assert_eq!(v.scouts, [scout("Alex", "Smith"), scout("Jamie", "Smith")]);
+    }
+
+    #[test]
+    fn fee_checkout_requires_payer_and_scouts() {
+        let r = FeeCheckoutRequest { payer_name: " ".into(), payer_email: "nope".into(), scouts: vec![] };
+        assert_eq!(fee_fields(validate_fee_checkout(&r, 8)), ["payer_name", "payer_email", "scouts"]);
+        let r = fee_request(vec![scout("", "Smith"), scout("Al\tex", &"x".repeat(51))]);
+        assert_eq!(
+            fee_fields(validate_fee_checkout(&r, 8)),
+            ["scouts[0].first_name", "scouts[1].first_name", "scouts[1].last_name"]
+        );
+    }
+
+    #[test]
+    fn fee_checkout_rejects_case_insensitive_duplicates() {
+        let r = fee_request(vec![scout("Alex", "Smith"), scout(" ALEX ", "smith")]);
+        assert_eq!(fee_fields(validate_fee_checkout(&r, 8)), ["scouts"]);
+        // Same first name, different last name is fine.
+        assert!(validate_fee_checkout(&fee_request(vec![scout("Alex", "Smith"), scout("Alex", "Jones")]), 8).is_ok());
+    }
+
+    #[test]
+    fn fee_checkout_respects_max_scouts() {
+        let three: Vec<FeeScout> = (0..3).map(|i| scout(&format!("S{i}"), "Smith")).collect();
+        assert!(validate_fee_checkout(&fee_request(three[..2].to_vec()), 2).is_ok());
+        assert_eq!(fee_fields(validate_fee_checkout(&fee_request(three), 2)), ["scouts"]);
+    }
+
+    #[test]
+    fn cart_add_checks_limit_and_duplicates() {
+        let cart = vec![scout("Alex", "Smith")];
+        assert!(fee_cart_add_error(&cart, &scout("Jamie", "Smith"), 2).is_none());
+        assert!(fee_cart_add_error(&cart, &scout("alex", "SMITH"), 2).unwrap().contains("already"));
+        assert!(fee_cart_add_error(&cart, &scout("Jamie", "Smith"), 1).unwrap().contains("at most 1"));
+    }
+
+    #[test]
+    fn fee_scout_row_errors_use_row_field_names() {
+        let errs = validate_fee_scout(&scout(" ", "")).unwrap_err();
+        assert_eq!(errs.iter().map(|e| e.field.as_str()).collect::<Vec<_>>(), ["first_name", "last_name"]);
+    }
+
+    #[test]
+    fn local_datetime_format() {
+        assert_eq!(format_local_datetime("2027-01-31T23:59:59-05:00").as_deref(), Some("January 31, 2027 at 11:59 PM"));
+        assert_eq!(format_local_datetime("2026-09-05T00:05:00Z").as_deref(), Some("September 5, 2026 at 12:05 AM"));
+        assert_eq!(format_local_datetime("2026-09-05T12:00:00+00:00").as_deref(), Some("September 5, 2026 at 12:00 PM"));
+        assert!(format_local_datetime("tomorrow").is_none());
+        assert!(format_local_datetime("2026-13-05T12:00:00Z").is_none());
     }
 }

@@ -21,6 +21,8 @@ use t15_fundraiser::{
     router,
     stripe::{CreatedSession, PaymentProvider, SessionInfo, SessionRequest, sign},
 };
+use axum_extra::extract::cookie::{Cookie, Key, PrivateCookieJar};
+use axum::response::IntoResponse;
 use tower::ServiceExt;
 
 const CATALOG: &str = r#"
@@ -43,13 +45,23 @@ items:
     fulfillment: direct_ship
     image: box.jpg
     image_alt: A boxed wreath
+admins: ["admin@example.com"]
+annual_fee:
+  scouting_year: "2026-2027"
+  amount_cents: 5000
+  closes_at: "2027-01-31T23:59:59-05:00"
+  max_scouts: 3
+  note: "Covers campouts."
 "#;
+
+const ADMIN: &str = "admin@example.com";
 
 const SECRET: &str = "whsec_test";
 
 #[derive(Default)]
 struct FakeStripe {
     created: Mutex<Vec<(String, i64)>>, // (order_id, total)
+    requests: Mutex<Vec<SessionRequest>>,
     to_retrieve: Mutex<Option<SessionInfo>>,
     fail_create: Mutex<bool>,
 }
@@ -62,6 +74,7 @@ impl PaymentProvider for FakeStripe {
         }
         let total = req.lines.iter().map(|l| l.unit_amount * i64::from(l.qty)).sum();
         self.created.lock().unwrap().push((req.order_id.clone(), total));
+        self.requests.lock().unwrap().push(req.clone());
         let id = format!("cs_{}", req.order_id);
         Ok(CreatedSession { url: format!("https://checkout.stripe.test/{id}"), id })
     }
@@ -76,6 +89,7 @@ struct Harness {
     db: Db,
     stripe: Arc<FakeStripe>,
     clock: Arc<AtomicI64>,
+    cookie_key: Key,
 }
 
 fn utc(s: &str) -> DateTime<Utc> {
@@ -83,12 +97,17 @@ fn utc(s: &str) -> DateTime<Utc> {
 }
 
 fn harness() -> Harness {
+    harness_with(CATALOG)
+}
+
+fn harness_with(catalog: &str) -> Harness {
     let stripe = Arc::new(FakeStripe::default());
     let db = Db::open_in_memory().unwrap();
     let clock = Arc::new(AtomicI64::new(utc("2026-10-01T12:00:00Z").timestamp()));
     let c = clock.clone();
+    let cookie_key = Key::generate();
     let state = AppState {
-        catalog: Arc::new(Catalog::parse(CATALOG, |_| true).unwrap()),
+        catalog: Arc::new(Catalog::parse(catalog, |_| true).unwrap()),
         db: db.clone(),
         provider: stripe.clone(),
         webhook_secret: Arc::new(SECRET.into()),
@@ -97,9 +116,9 @@ fn harness() -> Harness {
         now: Arc::new(move || Utc.timestamp_opt(c.load(Ordering::SeqCst), 0).unwrap()),
         trust_proxy: false,
         admin_oidc: Arc::new(AdminOidc::dummy_for_tests("https://fundraiser.test")),
-        cookie_key: axum_extra::extract::cookie::Key::generate(),
+        cookie_key: cookie_key.clone(),
     };
-    Harness { app: router(state, None), db, stripe, clock }
+    Harness { app: router(state, None), db, stripe, clock, cookie_key }
 }
 
 async fn send(h: &Harness, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -357,6 +376,7 @@ async fn success_page_reconciles_when_webhook_is_late() {
     *h.stripe.to_retrieve.lock().unwrap() = Some(SessionInfo {
         id: sid.clone(), order_id: Some(order_id.clone()), status: "open".into(),
         payment_status: "unpaid".into(), amount_total: 7000, payment_intent: None,
+        ..Default::default()
     });
     let (s, body) = send(&h, Method::GET, &uri, None).await;
     assert_eq!((s, body["status"].as_str()), (StatusCode::OK, Some("pending")));
@@ -473,4 +493,474 @@ async fn export_lists_paid_orders() {
     assert!(csv.contains("Merry Christmas!"), "{csv}");
     assert!(csv.contains("$125.00"), "{csv}");
     assert!(csv.contains("1 Main St, Cleveland, OH 44101"), "{csv}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Annual camping fee
+// ---------------------------------------------------------------------------------------------
+
+fn fee_body(scouts: &[(&str, &str)]) -> Value {
+    json!({
+        "payer_name": "Pat Smith",
+        "payer_email": "Pat@Example.com",
+        "scouts": scouts.iter().map(|(f, l)| json!({"first_name": f, "last_name": l})).collect::<Vec<_>>(),
+    })
+}
+
+/// Start a fee checkout; returns (payment_id, session_id, what was sent to Stripe).
+async fn start_fee(h: &Harness, scouts: &[(&str, &str)]) -> (String, String, SessionRequest) {
+    let (status, body) = send(h, Method::POST, "/api/annual-fee/checkout", Some(fee_body(scouts))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let req = h.stripe.requests.lock().unwrap().last().cloned().unwrap();
+    let sid = format!("cs_{}", req.order_id);
+    assert_eq!(body["checkout_url"], format!("https://checkout.stripe.test/{sid}"));
+    (req.order_id.clone(), sid, req)
+}
+
+/// The Checkout Session object Stripe would send back for `req`.
+fn fee_session(req: &SessionRequest, amount_total: i64, payment_status: &str) -> Value {
+    let mut metadata: serde_json::Map<String, Value> =
+        req.metadata.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+    metadata.insert("order_id".into(), json!(req.order_id));
+    json!({
+        "id": format!("cs_{}", req.order_id),
+        "client_reference_id": req.order_id,
+        "status": if payment_status == "paid" { "complete" } else { "open" },
+        "payment_status": payment_status,
+        "amount_total": amount_total,
+        "payment_intent": "pi_fee",
+        "customer_email": req.email,
+        "customer_details": {"email": req.email},
+        "metadata": metadata,
+    })
+}
+
+fn event(event_id: &str, kind: &str, object: Value) -> Value {
+    json!({"id": event_id, "type": kind, "data": {"object": object}})
+}
+
+async fn fee_rows(h: &Harness) -> Vec<db::AnnualFeeRow> {
+    h.db.call(|c| db::list_annual_fees(c, None)).await.unwrap()
+}
+
+async fn count(h: &Harness, table: &'static str) -> i64 {
+    h.db.call(move |c| c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))).await.unwrap()
+}
+
+#[tokio::test]
+async fn fee_info_is_served_with_its_own_cutoff() {
+    let h = harness();
+    let (s, body) = send(&h, Method::GET, "/api/annual-fee", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body["scouting_year"], "2026-2027");
+    assert_eq!(body["amount_cents"], 5000);
+    assert_eq!(body["max_scouts"], 3);
+    assert_eq!(body["note"], "Covers campouts.");
+    assert_eq!(body["closes_at"], "2027-01-31T23:59:59-05:00");
+    assert_eq!(body["open"], true);
+
+    // The greenery cutoff doesn't apply to fees.
+    h.clock.store(utc("2026-12-01T12:00:00Z").timestamp(), Ordering::SeqCst);
+    let (_, cat) = send(&h, Method::GET, "/api/catalog", None).await;
+    let (_, fee) = send(&h, Method::GET, "/api/annual-fee", None).await;
+    assert_eq!((cat["open"].as_bool(), fee["open"].as_bool()), (Some(false), Some(true)));
+}
+
+#[tokio::test]
+async fn fee_endpoints_404_when_not_configured() {
+    let without = CATALOG.split("annual_fee:").next().unwrap();
+    let h = harness_with(without);
+    let (s, body) = send(&h, Method::GET, "/api/annual-fee", None).await;
+    assert_eq!((s, body["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
+    let (s, _) = send(&h, Method::POST, "/api/annual-fee/checkout", Some(fee_body(&[("Alex", "Smith")]))).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = send(&h, Method::GET, "/api/annual-fee/af_x/status?session_id=cs_x", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert!(h.stripe.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn fee_checkout_creates_session_per_scout_and_writes_nothing() {
+    let h = harness();
+    let now = h.clock.load(Ordering::SeqCst);
+    let (payment_id, _, req) = start_fee(&h, &[(" Alex ", "Smith"), ("Jamie", "Smith")]).await;
+
+    assert!(payment_id.starts_with("af_") && payment_id.len() == 3 + 36, "{payment_id}");
+    assert_eq!(req.email, "pat@example.com");
+    assert_eq!(req.description, format!("Troop 15 annual camping fee {payment_id}"));
+    assert_eq!(req.lines.len(), 2);
+    for (l, name) in req.lines.iter().zip(["Alex Smith", "Jamie Smith"]) {
+        assert_eq!(l.name, format!("Annual camping fee 2026-2027 — {name}"));
+        assert_eq!((l.unit_amount, l.qty, l.image_url.as_deref()), (5000, 1, None));
+    }
+    let meta: std::collections::HashMap<&str, &str> = req.metadata.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    assert_eq!(meta["kind"], "annual_fee");
+    assert_eq!(meta["scouting_year"], "2026-2027");
+    assert_eq!(meta["amount_cents"], "5000");
+    assert_eq!(meta["scout_count"], "2");
+    assert_eq!(meta["scout_0"], "Alex\tSmith");
+    assert_eq!(meta["scout_1"], "Jamie\tSmith");
+    assert_eq!(meta["payer_name"], "Pat Smith");
+    assert_eq!(
+        req.success_url,
+        format!("https://fundraiser.test/annual-fee/success?payment={payment_id}&session_id={{CHECKOUT_SESSION_ID}}")
+    );
+    assert_eq!(req.cancel_url, "https://fundraiser.test/annual-fee/cancel");
+    assert_eq!(req.expires_at, now + 31 * 60);
+
+    assert_eq!((count(&h, "annual_fees").await, count(&h, "orders").await), (0, 0), "nothing stored before payment");
+}
+
+#[tokio::test]
+async fn fee_checkout_ignores_client_supplied_amounts() {
+    let h = harness();
+    let mut body = fee_body(&[("Alex", "Smith")]);
+    body["amount_cents"] = json!(1);
+    body["total_cents"] = json!(1);
+    body["scouts"][0]["amount_cents"] = json!(1);
+    let (s, _) = send(&h, Method::POST, "/api/annual-fee/checkout", Some(body)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(h.stripe.created.lock().unwrap()[0].1, 5000);
+}
+
+#[tokio::test]
+async fn invalid_fee_checkout_is_400_with_fields_and_no_session() {
+    let h = harness();
+    let mut body = fee_body(&[("Alex", "Smith"), ("alex", "SMITH"), ("", "Jones")]);
+    body["payer_email"] = json!("nope");
+    let (s, resp) = send(&h, Method::POST, "/api/annual-fee/checkout", Some(body)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(resp["code"], "invalid");
+    let fields: Vec<&str> = resp["fields"].as_array().unwrap().iter().map(|f| f["field"].as_str().unwrap()).collect();
+    assert_eq!(fields, ["payer_email", "scouts", "scouts[2].first_name"], "{resp}");
+
+    // max_scouts is 3 in the test config.
+    let four = fee_body(&[("A", "Smith"), ("B", "Smith"), ("C", "Smith"), ("D", "Smith")]);
+    let (s, resp) = send(&h, Method::POST, "/api/annual-fee/checkout", Some(four)).await;
+    assert_eq!((s, resp["fields"][0]["field"].as_str()), (StatusCode::BAD_REQUEST, Some("scouts")));
+    assert!(h.stripe.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn fee_checkout_closes_at_its_cutoff() {
+    let h = harness();
+    h.clock.store(utc("2027-01-31T23:59:59-05:00").timestamp(), Ordering::SeqCst);
+    start_fee(&h, &[("Alex", "Smith")]).await;
+    h.clock.store(utc("2027-02-01T00:00:00-05:00").timestamp(), Ordering::SeqCst);
+    let (s, body) = send(&h, Method::POST, "/api/annual-fee/checkout", Some(fee_body(&[("Alex", "Smith")]))).await;
+    assert_eq!((s, body["code"].as_str()), (StatusCode::CONFLICT, Some("closed")));
+    let (_, info) = send(&h, Method::GET, "/api/annual-fee", None).await;
+    assert_eq!(info["open"], false);
+    assert_eq!(h.stripe.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn paid_fee_webhook_records_one_paid_row_per_scout() {
+    let h = harness();
+    let (payment_id, sid, req) = start_fee(&h, &[("Alex", "Smith"), ("Jamie", "Smith")]).await;
+    let ev = event("evt_f1", "checkout.session.completed", fee_session(&req, 10000, "paid"));
+    assert_eq!(webhook(&h, &ev).await, StatusCode::OK);
+
+    let rows = fee_rows(&h).await;
+    assert_eq!(rows.len(), 2);
+    for (i, r) in rows.iter().enumerate() {
+        assert_eq!(r.status, shared::FeeStatus::Paid);
+        assert_eq!((r.payment_id.as_str(), r.line_no), (payment_id.as_str(), i as i64));
+        assert_eq!((r.scouting_year.as_str(), r.amount_cents), ("2026-2027", 5000));
+        assert_eq!((r.payer_name.as_str(), r.payer_email.as_str()), ("Pat Smith", "pat@example.com"));
+        assert_eq!((r.stripe_session_id.as_str(), r.stripe_payment_intent_id.as_deref()), (sid.as_str(), Some("pi_fee")));
+        assert_eq!(r.paid_at, "2026-10-01T12:00:00Z");
+        assert!(r.review_reason.is_none());
+    }
+    assert_eq!((rows[0].scout_first_name.as_str(), rows[1].scout_first_name.as_str()), ("Alex", "Jamie"));
+    assert_eq!(count(&h, "orders").await, 0, "fees never touch orders");
+
+    let (s, body) = send(&h, Method::GET, &format!("/api/annual-fee/{payment_id}/status?session_id={sid}"), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body["status"], "paid");
+    assert_eq!(body["total_cents"], 10000);
+    assert_eq!(body["payer_email"], "pat@example.com");
+    assert_eq!(body["scouting_year"], "2026-2027");
+    assert_eq!(body["scouts"][1], json!({"first_name": "Jamie", "last_name": "Smith"}));
+}
+
+#[tokio::test]
+async fn duplicate_fee_webhooks_are_no_ops() {
+    let h = harness();
+    let (_, _, req) = start_fee(&h, &[("Alex", "Smith"), ("Jamie", "Smith")]).await;
+    let ev = event("evt_d1", "checkout.session.completed", fee_session(&req, 10000, "paid"));
+    webhook(&h, &ev).await;
+    let before = fee_rows(&h).await;
+
+    h.clock.fetch_add(60, Ordering::SeqCst);
+    assert_eq!(webhook(&h, &ev).await, StatusCode::OK, "redelivery");
+    let other = event("evt_d2", "checkout.session.async_payment_succeeded", fee_session(&req, 10000, "paid"));
+    assert_eq!(webhook(&h, &other).await, StatusCode::OK, "a second event for the same session");
+
+    assert_eq!(fee_rows(&h).await, before, "same rows, same paid_at");
+    assert_eq!(count(&h, "stripe_events").await, 2);
+}
+
+#[tokio::test]
+async fn status_reconciliation_and_webhook_record_the_session_once() {
+    let h = harness();
+    let (payment_id, sid, req) = start_fee(&h, &[("Alex", "Smith"), ("Jamie", "Smith")]).await;
+    let uri = format!("/api/annual-fee/{payment_id}/status?session_id={sid}");
+
+    // Still open at Stripe: pending, described from the session metadata, nothing stored.
+    let open = SessionInfo::from_json(&fee_session(&req, 10000, "unpaid")).unwrap();
+    *h.stripe.to_retrieve.lock().unwrap() = Some(open);
+    let (s, body) = send(&h, Method::GET, &uri, None).await;
+    assert_eq!((s, body["status"].as_str()), (StatusCode::OK, Some("pending")));
+    assert_eq!((body["total_cents"].as_i64(), body["scouts"].as_array().map(Vec::len)), (Some(10000), Some(2)));
+    assert_eq!(count(&h, "annual_fees").await, 0);
+
+    // Paid at Stripe, webhook not here yet: the status poll records it.
+    let paid = SessionInfo::from_json(&fee_session(&req, 10000, "paid")).unwrap();
+    *h.stripe.to_retrieve.lock().unwrap() = Some(paid);
+    let (_, body) = send(&h, Method::GET, &uri, None).await;
+    assert_eq!(body["status"], "paid");
+    assert_eq!(count(&h, "annual_fees").await, 2);
+
+    // Then the webhook arrives: no new rows.
+    webhook(&h, &event("evt_r1", "checkout.session.completed", fee_session(&req, 10000, "paid"))).await;
+    assert_eq!(count(&h, "annual_fees").await, 2);
+
+    // Once rows exist, Stripe isn't asked again.
+    *h.stripe.to_retrieve.lock().unwrap() = None;
+    let (s, body) = send(&h, Method::GET, &uri, None).await;
+    assert_eq!((s, body["status"].as_str()), (StatusCode::OK, Some("paid")));
+}
+
+#[tokio::test]
+async fn fee_status_checks_the_session_belongs_to_the_payment() {
+    let h = harness();
+    let (payment_id, sid, req) = start_fee(&h, &[("Alex", "Smith")]).await;
+    let (other_id, other_sid, other_req) = start_fee(&h, &[("Jamie", "Smith")]).await;
+
+    // Stripe returns a session for a different payment: rejected, nothing recorded.
+    *h.stripe.to_retrieve.lock().unwrap() = Some(SessionInfo::from_json(&fee_session(&other_req, 5000, "paid")).unwrap());
+    let (s, _) = send(&h, Method::GET, &format!("/api/annual-fee/{payment_id}/status?session_id={other_sid}"), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(count(&h, "annual_fees").await, 0);
+
+    // Recorded rows are only shown with their own session id.
+    webhook(&h, &event("evt_s1", "checkout.session.completed", fee_session(&req, 5000, "paid"))).await;
+    let (s, _) = send(&h, Method::GET, &format!("/api/annual-fee/{payment_id}/status?session_id={other_sid}"), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = send(&h, Method::GET, &format!("/api/annual-fee/{payment_id}/status?session_id={sid}"), None).await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Order ids aren't fee payments.
+    let (s, _) = send(&h, Method::GET, "/api/annual-fee/some-order-id/status?session_id=cs_x", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // An expired session reports expired.
+    let mut expired = fee_session(&other_req, 5000, "unpaid");
+    expired["status"] = json!("expired");
+    *h.stripe.to_retrieve.lock().unwrap() = Some(SessionInfo::from_json(&expired).unwrap());
+    let (_, body) = send(&h, Method::GET, &format!("/api/annual-fee/{other_id}/status?session_id={other_sid}"), None).await;
+    assert_eq!(body["status"], "expired");
+}
+
+#[tokio::test]
+async fn fee_amount_mismatch_records_needs_review() {
+    let h = harness();
+    let (payment_id, sid, req) = start_fee(&h, &[("Alex", "Smith"), ("Jamie", "Smith")]).await;
+    webhook(&h, &event("evt_m1", "checkout.session.completed", fee_session(&req, 5000, "paid"))).await;
+    let rows = fee_rows(&h).await;
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.status == shared::FeeStatus::NeedsReview));
+    assert!(rows[0].review_reason.as_deref().unwrap().contains("5000"), "{:?}", rows[0].review_reason);
+    let (_, body) = send(&h, Method::GET, &format!("/api/annual-fee/{payment_id}/status?session_id={sid}"), None).await;
+    assert_eq!(body["status"], "needs_review");
+}
+
+#[tokio::test]
+async fn expired_or_unpaid_fee_webhooks_write_nothing() {
+    let h = harness();
+    let (_, _, req) = start_fee(&h, &[("Alex", "Smith")]).await;
+    let mut expired = fee_session(&req, 5000, "unpaid");
+    expired["status"] = json!("expired");
+    assert_eq!(webhook(&h, &event("evt_x1", "checkout.session.expired", expired)).await, StatusCode::OK);
+    let unpaid = fee_session(&req, 5000, "unpaid");
+    assert_eq!(webhook(&h, &event("evt_x2", "checkout.session.completed", unpaid)).await, StatusCode::OK);
+    assert_eq!((count(&h, "annual_fees").await, count(&h, "stripe_events").await), (0, 0));
+}
+
+#[tokio::test]
+async fn paid_fee_webhook_after_cutoff_is_still_recorded() {
+    let h = harness();
+    h.clock.store(utc("2027-01-31T23:50:00-05:00").timestamp(), Ordering::SeqCst);
+    let (_, _, req) = start_fee(&h, &[("Alex", "Smith")]).await;
+    h.clock.store(utc("2027-02-01T00:10:00-05:00").timestamp(), Ordering::SeqCst);
+    assert_eq!(webhook(&h, &event("evt_l1", "checkout.session.completed", fee_session(&req, 5000, "paid"))).await, StatusCode::OK);
+    let rows = fee_rows(&h).await;
+    assert_eq!((rows.len(), rows[0].status), (1, shared::FeeStatus::Paid));
+}
+
+#[tokio::test]
+async fn order_and_fee_webhooks_are_routed_by_reference_prefix() {
+    let h = harness();
+    let (order_id, order_sid) = place(&h, wreaths(1)).await;
+    let (_, _, req) = start_fee(&h, &[("Alex", "Smith")]).await;
+    webhook(&h, &completed_event("evt_o", &order_id, &order_sid, 3500)).await;
+    webhook(&h, &event("evt_f", "checkout.session.completed", fee_session(&req, 5000, "paid"))).await;
+    assert_eq!(order(&h, &order_id).await.status.as_str(), "paid");
+    assert_eq!(count(&h, "annual_fees").await, 1);
+    assert_eq!(count(&h, "orders").await, 1);
+}
+
+// ---- admin ----------------------------------------------------------------------------------
+
+/// A `Cookie` header value for a signed-in admin, encrypted with the app's key.
+fn admin_cookie(h: &Harness) -> String {
+    let session = json!({"email": ADMIN, "expires_at": Utc::now().timestamp() + 3600}).to_string();
+    let resp = PrivateCookieJar::new(h.cookie_key.clone()).add(Cookie::new("admin_session", session)).into_response();
+    let set_cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+    set_cookie.split(';').next().unwrap().to_string()
+}
+
+/// GET as a signed-in admin (or signed out); returns status, headers, and body text.
+async fn admin_get(h: &Harness, uri: &str, signed_in: bool) -> (StatusCode, axum::http::HeaderMap, String) {
+    let mut b = Request::builder().method(Method::GET).uri(uri);
+    if signed_in {
+        b = b.header("cookie", admin_cookie(h));
+    }
+    let resp = h.app.clone().oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
+    let (status, headers) = (resp.status(), resp.headers().clone());
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+/// Pay for `scouts` through the webhook; `amount` overrides the correct total.
+async fn pay_fee(h: &Harness, scouts: &[(&str, &str)], amount: Option<i64>) {
+    let (payment_id, _, req) = start_fee(h, scouts).await;
+    let total = amount.unwrap_or(5000 * scouts.len() as i64);
+    webhook(h, &event(&format!("evt_{payment_id}"), "checkout.session.completed", fee_session(&req, total, "paid"))).await;
+}
+
+async fn insert_old_year_fee(h: &Harness, first: &str, last: &str) {
+    let row = db::AnnualFeeRow {
+        payment_id: "af_old".into(),
+        line_no: 0,
+        status: shared::FeeStatus::Paid,
+        review_reason: None,
+        scouting_year: "2025-2026".into(),
+        scout_first_name: first.into(),
+        scout_last_name: last.into(),
+        amount_cents: 4000,
+        payer_name: "Old Payer".into(),
+        payer_email: "old@example.com".into(),
+        stripe_session_id: "cs_old".into(),
+        stripe_payment_intent_id: None,
+        paid_at: "2025-10-01T12:00:00Z".into(),
+    };
+    h.db.call(move |c| db::insert_fee_payment(c, None, &[row], "now")).await.unwrap();
+}
+
+#[tokio::test]
+async fn admin_fee_routes_redirect_when_signed_out() {
+    let h = harness();
+    for uri in ["/admin/annual-fees", "/admin/annual-fees.csv", "/admin/annual-fees?year=2026-2027"] {
+        let (s, headers, _) = admin_get(&h, uri, false).await;
+        assert_eq!(s, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(headers.get("location").unwrap(), "/admin", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn admin_page_shows_fee_summary_and_links() {
+    let h = harness();
+    pay_fee(&h, &[("Alex", "Smith"), ("Jamie", "Smith")], None).await;
+    pay_fee(&h, &[("Sam", "Jones")], Some(1)).await;
+    let (s, headers, html) = admin_get(&h, "/admin", true).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert!(html.contains("Signed in as admin@example.com"), "{html}");
+    assert!(html.contains("Download orders CSV"), "{html}");
+    assert!(html.contains("Annual camping fees 2026-2027"), "{html}");
+    assert!(html.contains("<th>Scouts paid</th><td class=\"n\">2</td>"), "{html}");
+    // Sum of the recorded per-scout amounts, needs_review rows included (their money arrived).
+    assert!(html.contains("$150.00"), "{html}");
+    assert!(html.contains("<th>Checkouts</th><td class=\"n\">2</td>"), "{html}");
+    assert!(html.contains("<span class=\"alert\">1</span>"), "needs review is highlighted: {html}");
+    assert!(html.contains("January 31, 2027 at 11:59 PM") && html.contains("<strong>open</strong>"), "{html}");
+    assert!(html.contains("href=\"/admin/annual-fees\">View annual fee report"), "{html}");
+    assert!(html.contains("href=\"/admin/annual-fees.csv\">Download annual fees CSV"), "{html}");
+    assert!(html.contains("Log out"));
+
+    // Without the config block the section is omitted.
+    let h = harness_with(CATALOG.split("annual_fee:").next().unwrap());
+    let (_, _, html) = admin_get(&h, "/admin", true).await;
+    assert!(html.contains("Download orders CSV") && !html.contains("Annual camping fees"), "{html}");
+}
+
+#[tokio::test]
+async fn admin_fee_report_shows_totals_review_table_and_duplicates() {
+    let h = harness();
+    pay_fee(&h, &[("Zed", "Adams"), ("Alex", "Smith")], None).await;
+    pay_fee(&h, &[("ALEX", "smith")], None).await; // a second parent paid for the same scout
+    pay_fee(&h, &[("<b>Bobby</b>", "Tables & Co")], Some(1)).await;
+
+    let (s, headers, html) = admin_get(&h, "/admin/annual-fees", true).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert!(html.contains("<h1>Annual camping fees 2026-2027</h1>"), "{html}");
+    assert!(html.contains("<th>Scouts paid</th><td class=\"n\">3</td>"), "{html}");
+    assert!(html.contains("<th>Checkouts</th><td class=\"n\">3</td>"), "{html}");
+    assert!(html.contains("$200.00"), "{html}");
+
+    // Needs review comes first and is escaped.
+    let review = html.find("Needs review</h2>").expect("needs review table");
+    let paid = html.find("Paid scouts (3)").expect("paid table");
+    assert!(review < paid);
+    assert!(html.contains("&lt;b&gt;Bobby&lt;/b&gt; Tables &amp; Co"), "{html}");
+    assert!(!html.contains("<b>Bobby"), "{html}");
+    assert!(html.contains("Stripe amount 1 != 1 x 5000") && html.contains("pi_fee"), "{html}");
+
+    // Paid table: sorted by last then first name; dates local; mailto; duplicates flagged.
+    let adams = html.find("<td>Adams</td>").unwrap();
+    let smith = html.find("<td>Smith</td>").or_else(|| html.find("<td>smith</td>")).unwrap();
+    assert!(adams < smith, "{html}");
+    assert!(html.contains("<td>2026-10-01</td>"), "{html}");
+    assert!(html.contains("<a href=\"mailto:pat@example.com\">pat@example.com</a>"), "{html}");
+    assert_eq!(html.matches("possible duplicate").count(), 2, "{html}");
+    assert!(html.contains("href=\"/admin/annual-fees.csv?year=2026-2027\""), "{html}");
+    assert!(html.contains("href=\"/admin\""), "{html}");
+}
+
+#[tokio::test]
+async fn admin_fee_report_and_csv_filter_by_year() {
+    let h = harness();
+    pay_fee(&h, &[("Alex", "Smith")], None).await;
+    insert_old_year_fee(&h, "Old", "Timer").await;
+
+    let (_, _, html) = admin_get(&h, "/admin/annual-fees", true).await;
+    assert!(html.contains("Smith") && !html.contains("Timer"), "defaults to the configured year: {html}");
+    assert!(html.contains("<a href=\"/admin/annual-fees?year=2025-2026\">2025-2026</a>"), "{html}");
+
+    let (_, _, html) = admin_get(&h, "/admin/annual-fees?year=2025-2026", true).await;
+    assert!(html.contains("Timer") && !html.contains(">Smith<"), "{html}");
+    assert!(html.contains("$40.00") && !html.contains("Payments close"), "{html}");
+
+    // CSV: one year, or all years sorted by year.
+    let (s, headers, csv) = admin_get(&h, "/admin/annual-fees.csv?year=2026-2027", true).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(headers.get("content-disposition").unwrap(), "attachment; filename=\"annual-fees-2026-2027.csv\"");
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    let csv = csv.trim_start_matches('\u{feff}');
+    let mut lines = csv.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        "scouting_year,scout_last_name,scout_first_name,amount,status,paid_at,payer_name,payer_email,payment_id,stripe_payment_intent_id,review_reason"
+    );
+    let row = lines.next().unwrap();
+    assert!(row.starts_with("2026-2027,Smith,Alex,$50.00,paid,2026-10-01T12:00:00Z,Pat Smith,pat@example.com,af_"), "{row}");
+    assert!(lines.next().is_none());
+
+    let (_, headers, csv) = admin_get(&h, "/admin/annual-fees.csv", true).await;
+    assert_eq!(headers.get("content-disposition").unwrap(), "attachment; filename=\"annual-fees-all.csv\"");
+    let years: Vec<&str> = csv.lines().skip(1).map(|l| l.split(',').next().unwrap()).collect();
+    assert_eq!(years, ["2025-2026", "2026-2027"]);
 }

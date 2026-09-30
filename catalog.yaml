@@ -157,3 +157,13 @@ support:
 admins: 
  - csl4jc@gmail.com
 
+
+# Annual camping fee page (/annual-fee, shared by direct URL). Remove this block to disable it.
+# amount_cents and closes_at are placeholders: set the real fee and cutoff before sharing the link.
+# closes_at is separate from the greenery closes_at above (RFC 3339, explicit offset; EST = -05:00).
+annual_fee:
+  scouting_year: "2026-2027"               # free text, 1-20 characters; stored on every payment
+  amount_cents: 5000                       # per scout; the troop absorbs Stripe's fees
+  closes_at: "2027-01-31T23:59:59-05:00"   # payments rejected after this moment
+  max_scouts: 8                            # per checkout, 1-10
+  note: "Covers campouts from September through August."   # optional, shown on the page

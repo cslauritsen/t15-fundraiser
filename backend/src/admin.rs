@@ -8,12 +8,18 @@
 //!                           the admin session cookie and redirects back to /admin.
 //!   GET /admin/logout    -> clears the session cookie.
 //!   GET /admin/export.csv -> streams the orders CSV; requires a valid session cookie.
+//!   GET /admin/annual-fees     -> annual camping fee report for one scouting year (`?year=`).
+//!   GET /admin/annual-fees.csv -> annual fees CSV (all years, or `?year=`).
+//!
+//! Every page except the login flow requires the session cookie and redirects to /admin
+//! without it. Pages with names or emails are sent with `Cache-Control: no-store`.
 //!
 //! Both the short-lived login flow state (CSRF token, nonce, PKCE verifier) and the admin
 //! session are kept in encrypted, HttpOnly cookies (`axum-extra`'s `PrivateCookieJar`) rather
 //! than server-side storage, so no session store is needed.
 
 use crate::{AppState, db, export};
+use chrono::{DateTime, Datelike, FixedOffset};
 use axum::{
     Router,
     extract::{Query, State},
@@ -127,6 +133,8 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/callback", get(admin_callback))
         .route("/admin/logout", get(admin_logout))
         .route("/admin/export.csv", get(admin_export))
+        .route("/admin/annual-fees", get(annual_fees_page))
+        .route("/admin/annual-fees.csv", get(annual_fees_csv))
 }
 
 fn now_ts() -> i64 {
@@ -169,13 +177,43 @@ fn page(status: axum::http::StatusCode, body: impl Into<String>) -> Response {
     (status, Html(body.into())).into_response()
 }
 
+const ADMIN_STYLE: &str = "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+<style>body{font-family:system-ui,sans-serif;margin:1rem;line-height:1.4;color:#1d2521}\
+.scroll{overflow-x:auto}table{border-collapse:collapse;margin:.5rem 0}\
+th,td{border:1px solid #d6dbd4;padding:.3rem .6rem;text-align:left;vertical-align:top}\
+td.n{text-align:right}th{background:#eef0ec}.alert{color:#b3261e;font-weight:700}\
+.dup{color:#8a5a00;font-weight:600}a{color:#1f5c3a}</style>";
+
+/// A signed-in page. `no-store` because these pages show names and emails.
+fn private_page(title: &str, body: &str) -> Response {
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Html(format!("<!doctype html><title>{}</title>{ADMIN_STYLE}{body}", html_escape(title))),
+    )
+        .into_response()
+}
+
 async fn admin_page(State(st): State<AppState>, jar: PrivateCookieJar) -> Response {
     if let Some(email) = current_admin(&st, &jar) {
-        return page(
-            axum::http::StatusCode::OK,
-            format!(
-                "<!doctype html><title>Admin</title><p>Signed in as {}.</p>\
+        let fees = match &st.catalog.annual_fee {
+            None => String::new(),
+            Some(cfg) => {
+                let year = cfg.scouting_year.clone();
+                match st.db.call(move |c| db::annual_fee_summary(c, &year)).await {
+                    Ok(summary) => fee_admin_section(cfg, &summary, cfg.is_open((st.now)())),
+                    Err(e) => {
+                        tracing::error!("admin: loading annual fee summary failed: {e:#}");
+                        "<h2>Annual camping fees</h2><p class=\"alert\">Could not load the annual fee summary.</p>".into()
+                    }
+                }
+            }
+        };
+        return private_page(
+            "Admin",
+            &format!(
+                "<p>Signed in as {}.</p>\
                  <p><a href=\"/admin/export.csv\">Download orders CSV</a></p>\
+                 {fees}\
                  <p><a href=\"/admin/logout\">Log out</a></p>",
                 html_escape(&email)
             ),
@@ -313,6 +351,250 @@ async fn admin_export(State(st): State<AppState>, jar: PrivateCookieJar) -> Resp
         [
             (axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8"),
             (axum::http::header::CONTENT_DISPOSITION, "attachment; filename=\"orders.csv\""),
+        ],
+        buf,
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Annual camping fees
+// ---------------------------------------------------------------------------------------------
+
+/// Percent-encode a query-string value (scouting years are free text).
+fn query_escape(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// The summary numbers, as a two-column table.
+fn fee_summary_table(s: &db::AnnualFeeSummary) -> String {
+    let review = if s.needs_review > 0 {
+        format!("<span class=\"alert\">{}</span>", s.needs_review)
+    } else {
+        "0".into()
+    };
+    format!(
+        "<table>\
+         <tr><th>Scouts paid</th><td class=\"n\">{}</td></tr>\
+         <tr><th>Total collected (before Stripe fees)</th><td class=\"n\">{}</td></tr>\
+         <tr><th>Checkouts</th><td class=\"n\">{}</td></tr>\
+         <tr><th>Needs review</th><td class=\"n\">{review}</td></tr>\
+         </table>",
+        s.scouts_paid,
+        shared::format_cents(s.total_cents),
+        s.checkouts,
+    )
+}
+
+fn closing_line(cfg: &crate::catalog::AnnualFeeConfig, open: bool) -> String {
+    let when = shared::format_local_datetime(&cfg.closes_at.to_rfc3339()).unwrap_or_else(|| cfg.closes_at.to_rfc3339());
+    let state = if open { "open" } else { "closed" };
+    format!("<p>Payments close {} — currently <strong>{state}</strong>.</p>", html_escape(&when))
+}
+
+/// The "Annual camping fees" section of `/admin`, for the configured scouting year.
+fn fee_admin_section(cfg: &crate::catalog::AnnualFeeConfig, summary: &db::AnnualFeeSummary, open: bool) -> String {
+    format!(
+        "<h2>Annual camping fees {}</h2>{}{}\
+         <p><a href=\"/admin/annual-fees\">View annual fee report</a></p>\
+         <p><a href=\"/admin/annual-fees.csv\">Download annual fees CSV</a></p>",
+        html_escape(&cfg.scouting_year),
+        fee_summary_table(summary),
+        closing_line(cfg, open),
+    )
+}
+
+#[derive(Deserialize)]
+struct YearQuery {
+    year: Option<String>,
+}
+
+impl YearQuery {
+    fn year(self) -> Option<String> {
+        self.year.map(|y| y.trim().to_string()).filter(|y| !y.is_empty())
+    }
+}
+
+/// `paid_at` (UTC) as a date in the troop's local offset: the one `closes_at` is written in.
+fn local_date(paid_at: &str, offset: FixedOffset) -> String {
+    match DateTime::parse_from_rfc3339(paid_at) {
+        Ok(t) => {
+            let t = t.with_timezone(&offset);
+            format!("{:04}-{:02}-{:02}", t.year(), t.month(), t.day())
+        }
+        Err(_) => paid_at.to_string(),
+    }
+}
+
+struct FeeReport {
+    years: Vec<String>,
+    summary: db::AnnualFeeSummary,
+    rows: Vec<db::AnnualFeeRow>,
+}
+
+async fn annual_fees_page(State(st): State<AppState>, jar: PrivateCookieJar, Query(q): Query<YearQuery>) -> Response {
+    let Some(email) = current_admin(&st, &jar) else {
+        return Redirect::to("/admin").into_response();
+    };
+    let cfg = st.catalog.annual_fee.as_ref();
+    let requested = q.year().or_else(|| cfg.map(|c| c.scouting_year.clone()));
+    let loaded = st
+        .db
+        .call(move |c| {
+            let years = db::annual_fee_years(c)?;
+            // Without config or ?year=, show the newest year there is.
+            let year = requested.or_else(|| years.first().cloned()).unwrap_or_default();
+            let summary = db::annual_fee_summary(c, &year)?;
+            let rows = db::list_annual_fees(c, Some(&year))?;
+            Ok((year, FeeReport { years, summary, rows }))
+        })
+        .await;
+    let (year, report) = match loaded {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("admin: loading annual fee report failed: {e:#}");
+            return page(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Could not load annual fees.");
+        }
+    };
+    tracing::info!(email, year, rows = report.rows.len(), "admin viewed annual fee report");
+    let offset = cfg.map(|c| *c.closes_at.offset()).unwrap_or_else(|| FixedOffset::east_opt(0).expect("UTC"));
+    private_page("Annual camping fees", &fee_report_html(&year, &report, cfg, (st.now)(), offset))
+}
+
+fn fee_report_html(
+    year: &str,
+    r: &FeeReport,
+    cfg: Option<&crate::catalog::AnnualFeeConfig>,
+    now: chrono::DateTime<chrono::Utc>,
+    offset: FixedOffset,
+) -> String {
+    let esc = |s: &str| html_escape(s);
+    let mut h = format!("<h1>Annual camping fees {}</h1>", esc(year));
+
+    if !r.years.is_empty() {
+        let links: Vec<String> = r
+            .years
+            .iter()
+            .map(|y| {
+                if y == year {
+                    format!("<strong>{}</strong>", esc(y))
+                } else {
+                    format!("<a href=\"/admin/annual-fees?year={}\">{}</a>", query_escape(y), esc(y))
+                }
+            })
+            .collect();
+        h += &format!("<p>Scouting years: {}</p>", links.join(" · "));
+    }
+    h += &fee_summary_table(&r.summary);
+    if let Some(c) = cfg.filter(|c| c.scouting_year == year) {
+        h += &closing_line(c, c.is_open(now));
+    }
+
+    // Same scout (case-insensitively) under more than one checkout: probably paid twice.
+    let key = |f: &db::AnnualFeeRow| (f.scout_first_name.to_lowercase(), f.scout_last_name.to_lowercase());
+    let mut checkouts: std::collections::HashMap<(String, String), std::collections::HashSet<&str>> = Default::default();
+    for f in &r.rows {
+        checkouts.entry(key(f)).or_default().insert(&f.payment_id);
+    }
+    let dup_flag = |f: &db::AnnualFeeRow| {
+        if checkouts.get(&key(f)).is_some_and(|p| p.len() > 1) {
+            " <span class=\"dup\">possible duplicate</span>"
+        } else {
+            ""
+        }
+    };
+    let mailto = |e: &str| {
+        if e.is_empty() { String::new() } else { format!("<a href=\"mailto:{0}\">{0}</a>", esc(e)) }
+    };
+
+    let review: Vec<&db::AnnualFeeRow> = r.rows.iter().filter(|f| f.status == shared::FeeStatus::NeedsReview).collect();
+    if !review.is_empty() {
+        h += "<h2 class=\"alert\">Needs review</h2><div class=\"scroll\"><table><tr><th>Scout</th><th>Payer</th>\
+              <th>Payer email</th><th>Amount</th><th>Paid at</th><th>Reason</th><th>Stripe payment intent</th></tr>";
+        for f in review {
+            h += &format!(
+                "<tr><td>{} {}{}</td><td>{}</td><td>{}</td><td class=\"n\">{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                esc(&f.scout_first_name),
+                esc(&f.scout_last_name),
+                dup_flag(f),
+                esc(&f.payer_name),
+                mailto(&f.payer_email),
+                shared::format_cents(f.amount_cents),
+                esc(&f.paid_at),
+                esc(f.review_reason.as_deref().unwrap_or("")),
+                esc(f.stripe_payment_intent_id.as_deref().unwrap_or("")),
+            );
+        }
+        h += "</table></div>";
+    }
+
+    let paid: Vec<&db::AnnualFeeRow> = r.rows.iter().filter(|f| f.status == shared::FeeStatus::Paid).collect();
+    h += &format!("<h2>Paid scouts ({})</h2>", paid.len());
+    if paid.is_empty() {
+        h += "<p>No payments yet.</p>";
+    } else {
+        h += "<div class=\"scroll\"><table><tr><th>Last name</th><th>First name</th><th>Amount</th><th>Date paid</th>\
+              <th>Payer</th><th>Payer email</th><th></th></tr>";
+        for f in paid {
+            h += &format!(
+                "<tr><td>{}</td><td>{}</td><td class=\"n\">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                esc(&f.scout_last_name),
+                esc(&f.scout_first_name),
+                shared::format_cents(f.amount_cents),
+                local_date(&f.paid_at, offset),
+                esc(&f.payer_name),
+                mailto(&f.payer_email),
+                dup_flag(f).trim_start(),
+            );
+        }
+        h += "</table></div>";
+    }
+
+    h += &format!(
+        "<p><a href=\"/admin/annual-fees.csv?year={}\">Download CSV for {}</a></p><p><a href=\"/admin\">Back to admin</a></p>",
+        query_escape(year),
+        esc(year)
+    );
+    h
+}
+
+async fn annual_fees_csv(State(st): State<AppState>, jar: PrivateCookieJar, Query(q): Query<YearQuery>) -> Response {
+    let Some(email) = current_admin(&st, &jar) else {
+        return Redirect::to("/admin").into_response();
+    };
+    let year = q.year();
+    let y = year.clone();
+    let rows = match st.db.call(move |c| db::list_annual_fees(c, y.as_deref())).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("admin export: loading annual fees failed: {e:#}");
+            return page(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Could not load annual fees.");
+        }
+    };
+    let mut buf: Vec<u8> = Vec::new();
+    if let Err(e) = export::write_annual_fees_csv(&rows, &mut buf) {
+        tracing::error!("admin export: writing annual fees CSV failed: {e:#}");
+        return page(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Could not build CSV.");
+    }
+    tracing::info!(email, year, row_count = rows.len(), "admin exported annual fees CSV");
+
+    // The year is free text; keep the header value to safe filename characters.
+    let label: String = year
+        .as_deref()
+        .unwrap_or("all")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+            (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"annual-fees-{label}.csv\"")),
+            (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
         ],
         buf,
     )

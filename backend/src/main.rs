@@ -14,11 +14,13 @@ use t15_fundraiser::{
 };
 use tracing_subscriber::EnvFilter;
 
-const USAGE: &str = "usage: t15-fundraiser [serve | export | check-catalog]
+const USAGE: &str = "usage: t15-fundraiser [serve | export | export-annual-fees [--year Y] | check-catalog]
 
-  serve          run the web server (default)
-  export         print paid and needs_review orders as CSV to stdout
-  check-catalog  validate catalog.yaml and list its items";
+  serve               run the web server (default)
+  export              print paid and needs_review orders as CSV to stdout
+  export-annual-fees  print annual camping fee payments (one row per scout) as CSV to stdout;
+                      --year limits it to one scouting year, e.g. --year 2026-2027
+  check-catalog       validate catalog.yaml and list its items";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,6 +37,7 @@ async fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         None | Some("serve") => serve().await,
         Some("export") => export().await,
+        Some("export-annual-fees") => export_annual_fees(std::env::args().skip(2).collect()).await,
         Some("check-catalog") => check_catalog(),
         Some(_) => bail!("{USAGE}"),
     }
@@ -48,7 +51,35 @@ fn check_catalog() -> Result<()> {
     for i in &view.items {
         println!("  {:<24} {:>8}  {:?}  {}", i.id, shared::format_cents(i.price_cents), i.fulfillment, i.name);
     }
+    match &catalog.annual_fee {
+        None => println!("annual_fee: not configured (the /annual-fee page is disabled)"),
+        Some(f) => {
+            let open = if f.is_open(chrono::Utc::now()) { "open" } else { "closed" };
+            println!(
+                "annual_fee: {} at {} per scout, up to {} scouts per checkout; payments close {} ({open})",
+                f.scouting_year,
+                shared::format_cents(f.amount_cents),
+                f.max_scouts,
+                f.closes_at.to_rfc3339(),
+            );
+            if let Some(n) = &f.note {
+                println!("  note: {n}");
+            }
+        }
+    }
     Ok(())
+}
+
+async fn export_annual_fees(args: Vec<String>) -> Result<()> {
+    let year = match args.as_slice() {
+        [] => None,
+        [flag, y] if flag == "--year" && !y.is_empty() => Some(y.clone()),
+        [arg] if arg.starts_with("--year=") && arg.len() > 7 => Some(arg[7..].to_string()),
+        _ => bail!("{USAGE}"),
+    };
+    let db = Db::open(&Config::database_path_from_env())?;
+    let rows = db.call(move |c| db::list_annual_fees(c, year.as_deref())).await?;
+    export::write_annual_fees_csv(&rows, std::io::stdout().lock())
 }
 
 async fn export() -> Result<()> {
