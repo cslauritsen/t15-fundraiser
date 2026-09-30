@@ -165,7 +165,7 @@ TRUST_PROXY=1                  # optional: rate-limit by X-Forwarded-For behind 
 ALLOW_MISSING_IMAGES=1         # optional, dev only
 ```
 
-Use test-mode keys for development. Use `stripe listen --forward-to localhost:8080/api/stripe/webhook` locally.
+Use test-mode keys for development. Use `stripe listen --forward-to localhost:8080/api/stripe/webhook --events checkout.session.completed,checkout.session.async_payment_succeeded,checkout.session.expired` locally.
 
 ## 11. Deployment
 
