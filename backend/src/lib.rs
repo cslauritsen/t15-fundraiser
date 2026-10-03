@@ -115,6 +115,7 @@ pub fn router(state: AppState, dirs: Option<StaticDirs>) -> Router {
         .route("/api/catalog", get(catalog))
         .route("/api/orders/{id}/status", get(order_status))
         .route("/api/annual-fee", get(annual_fee::info))
+        .route("/api/annual-fee/check-name", get(annual_fee::check_name))
         .route("/api/annual-fee/{payment_id}/status", get(annual_fee::status))
         .route("/api/stripe/webhook", post(webhook))
         .merge(checkout)

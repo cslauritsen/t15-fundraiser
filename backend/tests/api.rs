@@ -655,6 +655,33 @@ async fn fee_checkout_closes_at_its_cutoff() {
 }
 
 #[tokio::test]
+async fn fee_name_check_flags_exact_and_prefix_matches_case_insensitively() {
+    let h = harness();
+    let (_, _, req) = start_fee(&h, &[("Alexander", "Smith"), ("Alex", "Smith")]).await;
+    let ev = event("evt_n1", "checkout.session.completed", fee_session(&req, 10000, "paid"));
+    assert_eq!(webhook(&h, &ev).await, StatusCode::OK);
+
+    let check = |f: &'static str, l: &'static str| {
+        let h = &h;
+        async move { send(h, Method::GET, &format!("/api/annual-fee/check-name?first_name={f}&last_name={l}"), None).await }
+    };
+    let (s, b) = check("aLEX", "smith").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(b["exact"], true);
+    assert_eq!(b["similar"], json!([{"first_name": "Alexander", "last_name": "Smith"}]));
+
+    let (_, b) = check("Al", "SMITH").await;
+    assert_eq!((b["exact"].as_bool(), b["similar"].as_array().unwrap().len()), (Some(false), 2));
+
+    // Different last name, or a first name that merely contains the text, is not a match;
+    // LIKE wildcards are literal.
+    for (f, l) in [("Alex", "Smyth"), ("lex", "Smith"), ("%", "Smith"), ("A_ex", "Smith")] {
+        let (_, b) = check(f, l).await;
+        assert_eq!((b["exact"].as_bool(), b["similar"].as_array().unwrap().len()), (Some(false), 0), "{f} {l}");
+    }
+}
+
+#[tokio::test]
 async fn paid_fee_webhook_records_one_paid_row_per_scout() {
     let h = harness();
     let (payment_id, sid, req) = start_fee(&h, &[("Alex", "Smith"), ("Jamie", "Smith")]).await;

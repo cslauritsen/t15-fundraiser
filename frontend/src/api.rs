@@ -1,7 +1,7 @@
 use gloo_net::http::Request;
 use shared::{
     AnnualFeeInfo, CatalogResponse, CheckoutRequest, CheckoutResponse, ErrorResponse, FeeCheckoutRequest,
-    FeeStatusResponse, OrderStatusResponse,
+    FeeNameCheckResponse, FeeStatusResponse, OrderStatusResponse,
 };
 
 /// Either a structured error from our backend or a transport problem.
@@ -57,6 +57,15 @@ pub async fn order_status(order_id: &str, session_id: &str) -> Result<OrderStatu
 
 pub async fn fetch_annual_fee() -> Result<AnnualFeeInfo, ApiError> {
     let resp = Request::get("/api/annual-fee").send().await.map_err(|_| ApiError::Network)?;
+    read(resp).await
+}
+
+pub async fn fee_check_name(first_name: &str, last_name: &str) -> Result<FeeNameCheckResponse, ApiError> {
+    let resp = Request::get("/api/annual-fee/check-name")
+        .query([("first_name", first_name), ("last_name", last_name)])
+        .send()
+        .await
+        .map_err(|_| ApiError::Network)?;
     read(resp).await
 }
 

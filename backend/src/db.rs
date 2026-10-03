@@ -433,6 +433,19 @@ pub fn list_annual_fees(conn: &Connection, year: Option<&str>) -> rusqlite::Resu
     stmt.query_map([year], row_to_fee)?.collect()
 }
 
+/// Distinct scouts already paid for `year` whose last name equals `last` and whose first name
+/// starts with `first`, both case-insensitively. `%`, `_` and `\` in `first` are literal.
+pub fn fee_name_matches(conn: &Connection, year: &str, first: &str, last: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    let escaped = first.to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT scout_first_name, scout_last_name FROM annual_fees
+         WHERE scouting_year = ?1 AND lower(scout_last_name) = lower(?2)
+           AND lower(scout_first_name) LIKE ?3 || '%' ESCAPE '\\'
+         ORDER BY scout_first_name COLLATE NOCASE, scout_last_name COLLATE NOCASE",
+    )?;
+    stmt.query_map(params![year, last, escaped], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AnnualFeeSummary {
     /// Rows with status `paid`.
