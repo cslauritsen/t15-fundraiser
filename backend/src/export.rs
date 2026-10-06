@@ -68,7 +68,7 @@ pub fn write_csv(orders: &[OrderRow], item_ids: &[String], mut w: impl Write) ->
     Ok(())
 }
 
-/// One row per scout, in the order given (`db::list_annual_fees` sorts by year, last, first).
+/// One row per scout, in the order given (`db::list_annual_fees` sorts by year, then date paid).
 /// Shared by `t15-fundraiser export-annual-fees` and `/admin/annual-fees.csv`.
 pub fn write_annual_fees_csv(rows: &[AnnualFeeRow], mut w: impl Write) -> Result<()> {
     w.write_all(b"\xEF\xBB\xBF")?;

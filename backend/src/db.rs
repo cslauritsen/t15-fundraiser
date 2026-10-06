@@ -227,10 +227,10 @@ pub fn get_order(conn: &Connection, id: &str) -> rusqlite::Result<Option<OrderRo
     .transpose()
 }
 
-/// Orders that need a human: paid ones (to fulfil) and needs_review ones (to check).
+/// Orders that need a human: paid ones (to fulfil) and needs_review ones (to check), oldest payment first.
 pub fn list_orders_for_export(conn: &Connection) -> rusqlite::Result<Vec<OrderRow>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {ORDER_COLS} FROM orders WHERE status IN ('paid','needs_review') ORDER BY created_at, id"
+        "SELECT {ORDER_COLS} FROM orders WHERE status IN ('paid','needs_review') ORDER BY COALESCE(paid_at, created_at), id"
     ))?;
     let mut rows = stmt.query_map([], row_to_order)?.collect::<rusqlite::Result<Vec<_>>>()?;
     for o in &mut rows {
@@ -424,11 +424,11 @@ pub fn fee_rows_for_payment(conn: &Connection, payment_id: &str) -> rusqlite::Re
     stmt.query_map([payment_id], row_to_fee)?.collect()
 }
 
-/// Every fee row, or one scouting year's, sorted by year, last name, first name.
+/// Every fee row, or one scouting year's, sorted by year, then oldest payment first.
 pub fn list_annual_fees(conn: &Connection, year: Option<&str>) -> rusqlite::Result<Vec<AnnualFeeRow>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {FEE_COLS} FROM annual_fees WHERE ?1 IS NULL OR scouting_year = ?1
-         ORDER BY scouting_year, scout_last_name COLLATE NOCASE, scout_first_name COLLATE NOCASE, paid_at, id"
+         ORDER BY scouting_year, paid_at, payment_id, line_no"
     ))?;
     stmt.query_map([year], row_to_fee)?.collect()
 }
