@@ -655,6 +655,33 @@ async fn fee_checkout_closes_at_its_cutoff() {
 }
 
 #[tokio::test]
+async fn fee_name_check_flags_exact_and_prefix_matches_case_insensitively() {
+    let h = harness();
+    let (_, _, req) = start_fee(&h, &[("Alexander", "Smith"), ("Alex", "Smith")]).await;
+    let ev = event("evt_n1", "checkout.session.completed", fee_session(&req, 10000, "paid"));
+    assert_eq!(webhook(&h, &ev).await, StatusCode::OK);
+
+    let check = |f: &'static str, l: &'static str| {
+        let h = &h;
+        async move { send(h, Method::GET, &format!("/api/annual-fee/check-name?first_name={f}&last_name={l}"), None).await }
+    };
+    let (s, b) = check("aLEX", "smith").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(b["exact"], true);
+    assert_eq!(b["similar"], json!([{"first_name": "Alexander", "last_name": "Smith"}]));
+
+    let (_, b) = check("Al", "SMITH").await;
+    assert_eq!((b["exact"].as_bool(), b["similar"].as_array().unwrap().len()), (Some(false), 2));
+
+    // Different last name, or a first name that merely contains the text, is not a match;
+    // LIKE wildcards are literal.
+    for (f, l) in [("Alex", "Smyth"), ("lex", "Smith"), ("%", "Smith"), ("A_ex", "Smith")] {
+        let (_, b) = check(f, l).await;
+        assert_eq!((b["exact"].as_bool(), b["similar"].as_array().unwrap().len()), (Some(false), 0), "{f} {l}");
+    }
+}
+
+#[tokio::test]
 async fn paid_fee_webhook_records_one_paid_row_per_scout() {
     let h = harness();
     let (payment_id, sid, req) = start_fee(&h, &[("Alex", "Smith"), ("Jamie", "Smith")]).await;
@@ -900,7 +927,9 @@ async fn admin_page_shows_fee_summary_and_links() {
 async fn admin_fee_report_shows_totals_review_table_and_duplicates() {
     let h = harness();
     pay_fee(&h, &[("Zed", "Adams"), ("Alex", "Smith")], None).await;
+    set_clock(&h, "2026-10-01T13:00:00Z");
     pay_fee(&h, &[("ALEX", "smith")], None).await; // a second parent paid for the same scout
+    set_clock(&h, "2026-10-01T14:00:00Z");
     pay_fee(&h, &[("<b>Bobby</b>", "Tables & Co")], Some(1)).await;
 
     let (s, headers, html) = admin_get(&h, "/admin/annual-fees", true).await;
@@ -919,10 +948,7 @@ async fn admin_fee_report_shows_totals_review_table_and_duplicates() {
     assert!(!html.contains("<b>Bobby"), "{html}");
     assert!(html.contains("Stripe amount 1 != 1 x 5000") && html.contains("pi_fee"), "{html}");
 
-    // Paid table: sorted by last then first name; dates local; mailto; duplicates flagged.
-    let adams = html.find("<td>Adams</td>").unwrap();
-    let smith = html.find("<td>Smith</td>").or_else(|| html.find("<td>smith</td>")).unwrap();
-    assert!(adams < smith, "{html}");
+    // Paid table: dates local; mailto; duplicates flagged.
     assert!(html.contains("<td>2026-10-01</td>"), "{html}");
     assert!(html.contains("<a href=\"mailto:pat@example.com\">pat@example.com</a>"), "{html}");
     assert_eq!(html.matches("possible duplicate").count(), 2, "{html}");
@@ -963,4 +989,106 @@ async fn admin_fee_report_and_csv_filter_by_year() {
     assert_eq!(headers.get("content-disposition").unwrap(), "attachment; filename=\"annual-fees-all.csv\"");
     let years: Vec<&str> = csv.lines().skip(1).map(|l| l.split(',').next().unwrap()).collect();
     assert_eq!(years, ["2025-2026", "2026-2027"]);
+}
+
+fn set_clock(h: &Harness, at: &str) {
+    h.clock.store(utc(at).timestamp(), Ordering::SeqCst);
+}
+
+#[tokio::test]
+async fn admin_fee_report_and_csv_are_sorted_by_date_paid_ascending() {
+    let h = harness();
+    set_clock(&h, "2026-10-01T12:00:00Z");
+    pay_fee(&h, &[("Zed", "Zimmer")], None).await;
+    set_clock(&h, "2026-10-02T12:00:00Z");
+    pay_fee(&h, &[("Alex", "Adams")], None).await;
+    set_clock(&h, "2026-10-03T12:00:00Z");
+    pay_fee(&h, &[("Mia", "Miller")], None).await;
+
+    let (_, _, html) = admin_get(&h, "/admin/annual-fees", true).await;
+    let pos = |n: &str| html.find(&format!("<td>{n}</td>")).unwrap_or_else(|| panic!("{n} missing: {html}"));
+    assert!(pos("Zimmer") < pos("Adams") && pos("Adams") < pos("Miller"), "{html}");
+
+    let (_, _, csv) = admin_get(&h, "/admin/annual-fees.csv", true).await;
+    let last_names: Vec<&str> = csv.lines().skip(1).map(|l| l.split(',').nth(1).unwrap()).collect();
+    assert_eq!(last_names, ["Zimmer", "Adams", "Miller"]);
+}
+
+/// Place an order at `placed` and pay it at `paid` (with `amount` as Stripe's total).
+async fn pay_order_at(h: &Harness, lines: Value, placed: &str, paid: &str, amount: i64) -> String {
+    set_clock(h, placed);
+    let (order_id, sid) = place(h, lines).await;
+    set_clock(h, paid);
+    let status = webhook(h, &completed_event(&format!("evt_{order_id}"), &order_id, &sid, amount)).await;
+    assert_eq!(status, StatusCode::OK);
+    order_id
+}
+
+#[tokio::test]
+async fn admin_order_routes_redirect_when_signed_out() {
+    let h = harness();
+    let (s, headers, _) = admin_get(&h, "/admin/orders", false).await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    assert_eq!(headers.get("location").unwrap(), "/admin");
+}
+
+#[tokio::test]
+async fn admin_page_links_to_order_report() {
+    let h = harness();
+    let (_, _, html) = admin_get(&h, "/admin", true).await;
+    assert!(html.contains("href=\"/admin/orders\">View orders report"), "{html}");
+}
+
+#[tokio::test]
+async fn admin_order_report_shows_summary_review_table_and_orders_by_date_paid() {
+    let h = harness();
+    // Placed in the opposite order to how they were paid.
+    pay_order_at(&h, wreaths(2), "2026-10-01T08:00:00Z", "2026-10-03T12:00:00Z", 7000).await;
+    pay_order_at(&h, json!([{"item_id": "box", "qty": 1}]), "2026-10-02T08:00:00Z", "2026-10-02T12:00:00Z", 5500).await;
+    pay_order_at(&h, wreaths(1), "2026-10-02T09:00:00Z", "2026-10-04T12:00:00Z", 1).await; // needs review
+    set_clock(&h, "2026-10-05T12:00:00Z");
+    place(&h, wreaths(5)).await; // pending: never paid, so not reported
+
+    let (s, headers, html) = admin_get(&h, "/admin/orders", true).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert!(html.contains("<h1>Orders</h1>"), "{html}");
+    assert!(html.contains("<th>Orders paid</th><td class=\"n\">2</td>"), "{html}");
+    assert!(html.contains("<th>Total collected (before Stripe fees)</th><td class=\"n\">$125.00</td>"), "{html}");
+    assert!(html.contains("<th>Needs review</th><td class=\"n\"><span class=\"alert\">1</span></td>"), "{html}");
+
+    assert!(html.contains("Needs review</h2>") && html.contains("Stripe amount 1 != order total 3500"), "{html}");
+    let review = html.find("Needs review</h2>").unwrap();
+    let paid = html.find("Paid orders (2)").expect("paid table");
+    assert!(review < paid, "{html}");
+
+    // Paid table: ascending by date paid, so the box (paid the 2nd) precedes the wreaths (the 3rd).
+    let paid_html = &html[paid..];
+    let box_at = paid_html.find("1 × Boxed Wreath").expect("box line");
+    let wreath_at = paid_html.find("2 × Wreath").expect("wreath line");
+    assert!(box_at < wreath_at, "{html}");
+    assert!(paid_html.contains("<td>2026-10-02</td>") && paid_html.contains("<td>2026-10-03</td>"), "{html}");
+    assert!(paid_html.contains("Pat Smith"), "{html}");
+    assert!(paid_html.contains("<a href=\"mailto:pat@example.com\">pat@example.com</a>"), "{html}");
+    assert!(!html.contains("5 × Wreath"), "pending orders are left out: {html}");
+    assert!(html.contains("href=\"/admin/export.csv\"") && html.contains("href=\"/admin\""), "{html}");
+}
+
+#[tokio::test]
+async fn admin_order_report_with_no_orders_says_so() {
+    let h = harness();
+    let (s, _, html) = admin_get(&h, "/admin/orders", true).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(html.contains("Paid orders (0)") && html.contains("No paid orders yet."), "{html}");
+    assert!(!html.contains("Needs review</h2>"), "{html}");
+}
+
+#[tokio::test]
+async fn admin_orders_csv_is_sorted_by_date_paid_ascending() {
+    let h = harness();
+    let late = pay_order_at(&h, wreaths(1), "2026-10-01T08:00:00Z", "2026-10-03T12:00:00Z", 3500).await;
+    let early = pay_order_at(&h, wreaths(1), "2026-10-02T08:00:00Z", "2026-10-02T12:00:00Z", 3500).await;
+    let (_, _, csv) = admin_get(&h, "/admin/export.csv", true).await;
+    let ids: Vec<&str> = csv.lines().skip(1).map(|l| l.split(',').next().unwrap()).collect();
+    assert_eq!(ids, [early.as_str(), late.as_str()]);
 }

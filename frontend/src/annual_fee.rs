@@ -11,7 +11,7 @@ use leptos::task::spawn_local;
 use leptos_router::{components::A, hooks::use_query_map};
 use serde::{Deserialize, Serialize};
 use shared::{
-    AnnualFeeInfo, FeeCheckoutRequest, FeeScout, FeeStatus, FieldError, MAX_SCOUT_NAME, fee_cart_add_error,
+    AnnualFeeInfo, FeeCheckoutRequest, FeeNameCheckResponse, FeeScout, FeeStatus, FieldError, MAX_SCOUT_NAME, fee_cart_add_error,
     format_cents, format_local_datetime, validate_fee_checkout, validate_fee_scout,
 };
 
@@ -123,6 +123,22 @@ fn FeeForm(info: AnnualFeeInfo) -> impl IntoView {
     let form_error = RwSignal::new(None::<String>);
     let submitting = RwSignal::new(false);
 
+    // Advisory warning about already-paid scouts with a matching name; never blocks "Add scout".
+    let name_check = RwSignal::new(None::<FeeNameCheckResponse>);
+    let check_name = move || {
+        let (f, l) = (first.get_untracked(), last.get_untracked());
+        if f.trim().is_empty() || l.trim().is_empty() {
+            return name_check.set(None);
+        }
+        spawn_local(async move {
+            let result = api::fee_check_name(&f, &l).await.ok();
+            // Ignore the answer if the boxes changed while the request was in flight.
+            if first.get_untracked() == f && last.get_untracked() == l {
+                name_check.set(result.filter(|r| r.exact || !r.similar.is_empty()));
+            }
+        });
+    };
+
     let add_scout = move || {
         let candidate = FeeScout { first_name: first.get_untracked(), last_name: last.get_untracked() };
         let scout = match validate_fee_scout(&candidate) {
@@ -137,6 +153,7 @@ fn FeeForm(info: AnnualFeeInfo) -> impl IntoView {
         scouts.update(|v| v.push(scout));
         first.set(String::new());
         last.set(String::new());
+        name_check.set(None);
     };
     // Enter in a name box adds the scout rather than submitting the payment form.
     let add_on_enter = move |ev: leptos::ev::KeyboardEvent| {
@@ -200,7 +217,8 @@ fn FeeForm(info: AnnualFeeInfo) -> impl IntoView {
                         "Scout first name"
                         <input type="text" name="first_name" autocomplete="off" maxlength=MAX_SCOUT_NAME
                             prop:value=move || first.get()
-                            on:input=move |ev| first.set(event_target_value(&ev))
+                            on:input=move |ev| { first.set(event_target_value(&ev)); name_check.set(None); }
+                            on:blur=move |_| check_name()
                             on:keydown=add_on_enter />
                         {move || field_error(&row_errors.get(), "first_name").map(|m| view! { <p class="err">{m}</p> })}
                     </label>
@@ -208,12 +226,22 @@ fn FeeForm(info: AnnualFeeInfo) -> impl IntoView {
                         "Scout last name"
                         <input type="text" name="last_name" autocomplete="off" maxlength=MAX_SCOUT_NAME
                             prop:value=move || last.get()
-                            on:input=move |ev| last.set(event_target_value(&ev))
+                            on:input=move |ev| { last.set(event_target_value(&ev)); name_check.set(None); }
+                            on:blur=move |_| check_name()
                             on:keydown=add_on_enter />
                         {move || field_error(&row_errors.get(), "last_name").map(|m| view! { <p class="err">{m}</p> })}
                     </label>
                     <button class="secondary" type="button" on:click=move |_| add_scout()>"Add scout"</button>
                 </div>
+                {move || name_check.get().map(|c| {
+                    let similar = c.similar.iter().map(FeeScout::full_name).collect::<Vec<_>>().join(", ");
+                    let message = match (c.exact, similar.is_empty()) {
+                        (true, true) => "A scout with this name has already been paid for this year. Only add them again if this is a different scout.".to_string(),
+                        (true, false) => format!("A scout with this name has already been paid for this year, and so has: {similar}. Only add them again if this is a different scout."),
+                        _ => format!("A similar name has already been paid for this year: {similar}. Check that this isn't the same scout."),
+                    };
+                    view! { <p class="warn" role="status">{message}</p> }
+                })}
                 {move || field_error(&row_errors.get(), "add").map(|m| view! { <p class="err" role="alert">{m}</p> })}
                 <p class="hint">{format!("Up to {max} scouts per payment.")}</p>
             </fieldset>

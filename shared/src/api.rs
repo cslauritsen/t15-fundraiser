@@ -219,6 +219,17 @@ impl FeeScout {
     }
 }
 
+/// `GET /api/annual-fee/check-name?first_name=&last_name=`: paid scouts for the current scouting
+/// year that look like the one being entered. Advisory only; it never blocks adding a scout.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeeNameCheckResponse {
+    /// A paid scout has this exact first and last name (case-insensitive).
+    pub exact: bool,
+    /// Paid scouts whose first name starts with the entered first name and whose last name
+    /// matches exactly (case-insensitive), excluding an exact match. As recorded.
+    pub similar: Vec<FeeScout>,
+}
+
 /// `POST /api/annual-fee/checkout`. There is deliberately no amount: it comes from the config.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FeeCheckoutRequest {

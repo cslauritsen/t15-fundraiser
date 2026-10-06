@@ -8,6 +8,7 @@
 //!                           the admin session cookie and redirects back to /admin.
 //!   GET /admin/logout    -> clears the session cookie.
 //!   GET /admin/export.csv -> streams the orders CSV; requires a valid session cookie.
+//!   GET /admin/orders    -> orders report: paid and needs-review orders, oldest payment first.
 //!   GET /admin/annual-fees     -> annual camping fee report for one scouting year (`?year=`).
 //!   GET /admin/annual-fees.csv -> annual fees CSV (all years, or `?year=`).
 //!
@@ -133,6 +134,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/callback", get(admin_callback))
         .route("/admin/logout", get(admin_logout))
         .route("/admin/export.csv", get(admin_export))
+        .route("/admin/orders", get(orders_page))
         .route("/admin/annual-fees", get(annual_fees_page))
         .route("/admin/annual-fees.csv", get(annual_fees_csv))
 }
@@ -212,6 +214,7 @@ async fn admin_page(State(st): State<AppState>, jar: PrivateCookieJar) -> Respon
             "Admin",
             &format!(
                 "<p>Signed in as {}.</p>\
+                 <p><a href=\"/admin/orders\">View orders report</a></p>\
                  <p><a href=\"/admin/export.csv\">Download orders CSV</a></p>\
                  {fees}\
                  <p><a href=\"/admin/logout\">Log out</a></p>",
@@ -355,6 +358,98 @@ async fn admin_export(State(st): State<AppState>, jar: PrivateCookieJar) -> Resp
         buf,
     )
         .into_response()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Orders report
+// ---------------------------------------------------------------------------------------------
+
+async fn orders_page(State(st): State<AppState>, jar: PrivateCookieJar) -> Response {
+    let Some(email) = current_admin(&st, &jar) else {
+        return Redirect::to("/admin").into_response();
+    };
+    let rows = match st.db.call(|c| db::list_orders_for_export(c)).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("admin: loading orders report failed: {e:#}");
+            return page(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Could not load orders.");
+        }
+    };
+    tracing::info!(email, rows = rows.len(), "admin viewed orders report");
+    // Dates are shown in the offset the catalog's cutoff is written in, like the fee report.
+    let offset = *st.catalog.closes_at.offset();
+    private_page("Orders", &orders_report_html(&rows, offset))
+}
+
+fn orders_report_html(rows: &[db::OrderRow], offset: FixedOffset) -> String {
+    let esc = |s: &str| html_escape(s);
+    let paid: Vec<&db::OrderRow> = rows.iter().filter(|o| o.status == shared::OrderStatus::Paid).collect();
+    let review: Vec<&db::OrderRow> = rows.iter().filter(|o| o.status == shared::OrderStatus::NeedsReview).collect();
+    let date = |o: &db::OrderRow| local_date(o.paid_at.as_deref().unwrap_or(&o.created_at), offset);
+    let items = |o: &db::OrderRow| {
+        o.lines.iter().map(|l| format!("{} × {}", l.qty, esc(&l.name))).collect::<Vec<_>>().join("<br>")
+    };
+    let mailto = |e: &str| {
+        if e.is_empty() { String::new() } else { format!("<a href=\"mailto:{0}\">{0}</a>", esc(e)) }
+    };
+    let review_count = if review.is_empty() {
+        "0".to_string()
+    } else {
+        format!("<span class=\"alert\">{}</span>", review.len())
+    };
+
+    let mut h = String::from("<h1>Orders</h1>");
+    h += &format!(
+        "<table>\
+         <tr><th>Orders paid</th><td class=\"n\">{}</td></tr>\
+         <tr><th>Total collected (before Stripe fees)</th><td class=\"n\">{}</td></tr>\
+         <tr><th>Needs review</th><td class=\"n\">{review_count}</td></tr>\
+         </table>",
+        paid.len(),
+        shared::format_cents(paid.iter().map(|o| o.total_cents).sum()),
+    );
+
+    if !review.is_empty() {
+        h += "<h2 class=\"alert\">Needs review</h2><div class=\"scroll\"><table><tr><th>Buyer</th><th>Email</th>\
+              <th>Items</th><th>Total</th><th>Paid at</th><th>Reason</th><th>Order</th></tr>";
+        for o in review {
+            h += &format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"n\">{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                esc(&o.buyer_name),
+                mailto(&o.email),
+                items(o),
+                shared::format_cents(o.total_cents),
+                esc(o.paid_at.as_deref().unwrap_or("")),
+                esc(o.review_reason.as_deref().unwrap_or("")),
+                esc(&o.id),
+            );
+        }
+        h += "</table></div>";
+    }
+
+    h += &format!("<h2>Paid orders ({})</h2>", paid.len());
+    if paid.is_empty() {
+        h += "<p>No paid orders yet.</p>";
+    } else {
+        h += "<div class=\"scroll\"><table><tr><th>Date paid</th><th>Buyer</th><th>Email</th><th>Phone</th>\
+              <th>Scout</th><th>Items</th><th>Total</th></tr>";
+        for o in paid {
+            h += &format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"n\">{}</td></tr>",
+                date(o),
+                esc(&o.buyer_name),
+                mailto(&o.email),
+                esc(&o.phone),
+                esc(o.scout_name.as_deref().unwrap_or("")),
+                items(o),
+                shared::format_cents(o.total_cents),
+            );
+        }
+        h += "</table></div>";
+    }
+
+    h += "<p><a href=\"/admin/export.csv\">Download orders CSV</a></p><p><a href=\"/admin\">Back to admin</a></p>";
+    h
 }
 
 // ---------------------------------------------------------------------------------------------

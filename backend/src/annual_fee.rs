@@ -18,7 +18,7 @@ use axum::{
 };
 use shared::{
     AnnualFeeInfo, CheckoutResponse, ErrorResponse, FeeCheckoutRequest, FeeScout, FeeStatus, FeeStatusResponse,
-    FieldError, validate_fee_checkout,
+    FeeNameCheckResponse, FieldError, fee_scout_key, validate_fee_checkout, validate_fee_scout,
 };
 use std::collections::HashMap;
 
@@ -218,6 +218,38 @@ pub async fn record_fee_payment(
 
 pub(crate) async fn info(State(st): State<AppState>) -> Result<Json<AnnualFeeInfo>, ApiError> {
     Ok(Json(config(&st)?.view((st.now)())))
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct NameQuery {
+    first_name: String,
+    last_name: String,
+}
+
+/// Advisory duplicate check for the add-scout row. Names are normalized the same way checkout
+/// does; a name that wouldn't validate simply has no matches.
+pub(crate) async fn check_name(
+    State(st): State<AppState>,
+    Query(q): Query<NameQuery>,
+) -> Result<Json<FeeNameCheckResponse>, ApiError> {
+    let cfg = config(&st)?;
+    let Ok(scout) = validate_fee_scout(&FeeScout { first_name: q.first_name, last_name: q.last_name }) else {
+        return Ok(Json(FeeNameCheckResponse::default()));
+    };
+    let year = cfg.scouting_year.clone();
+    let (first, last) = (scout.first_name.clone(), scout.last_name.clone());
+    let rows = st.db.call(move |c| db::fee_name_matches(c, &year, &first, &last)).await?;
+    let key = fee_scout_key(&scout);
+    let mut resp = FeeNameCheckResponse::default();
+    for (first_name, last_name) in rows {
+        let found = FeeScout { first_name, last_name };
+        if fee_scout_key(&found) == key {
+            resp.exact = true;
+        } else {
+            resp.similar.push(found);
+        }
+    }
+    Ok(Json(resp))
 }
 
 pub(crate) async fn checkout(
